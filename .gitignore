@@ -1,0 +1,16 @@
+.env
+
+# AI 데이터셋/모델 산출물 (대용량, Git으로 관리하지 않음)
+ai/data/*
+!ai/data/.gitkeep
+ai/models/*
+!ai/models/.gitkeep
+.ipynb_checkpoints/
+
+# STM32CubeIDE 빌드 산출물
+firmware/**/Debug/
+firmware/**/Release/
+*.o
+*.elf
+*.bin
+*.map
