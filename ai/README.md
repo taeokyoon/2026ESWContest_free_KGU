@@ -5,7 +5,7 @@ CAN 트래픽 이상탐지 모델의 데이터 전처리·학습·경량화를 �
 - `notebooks/` — Colab에서 작업한 `.ipynb` 파일
 - `data/` — 데이터셋 (원본 파일은 `.gitignore`로 제외, 다운로드 방법만 문서화)
 - `models/` — 학습 완료 모델 (`.h5`, `.tflite` 등)
-- `export/` — X-CUBE-AI로 변환한 C 코드 산출물. firmware 팀과의 인터페이스 지점 (자세한 내용은 `export/README.md` 참고)
+- `export/` — 추론용 C 코드(`inference.c`/`.h` + `autoencoder_v5_weights.h`) 산출물. firmware 팀과의 인터페이스 지점 (자세한 내용은 `export/README.md` 참고)
 
 ## 데이터셋
 
@@ -20,7 +20,8 @@ CAN 트래픽 이상탐지 모델의 데이터 전처리·학습·경량화를 �
 - [x] 3. 탐색적 데이터 분석(EDA) — Class/SubClass 분포, CAN ID·DATA 값 패턴 확인
 - [x] 4. 전처리 설계 — 윈도우(32개 프레임) 단위 입력으로 결정
 - [x] 5. 모델 선정 및 학습 — 경량 오토인코더 (v5로 확정, 아래 실험 기록 참고)
-- [ ] 6. X-CUBE-AI 변환 — 학습된 모델을 `export/`에 C 코드로 산출 → firmware 팀 전달 (일시 중단, 아래 "X-CUBE-AI 변환 진행 상황" 참고)
+- [x] 6. MCU 이식 방식 결정 — X-CUBE-AI/STM32Cube AI Studio 둘 다 F103RB 미지원 확인 → 수작업 C 추론으로 전환 결정 (아래 "MCU 이식 방식 최종 결정" 참고)
+- [x] 7. 추론 코드 작성 — `ai/export/inference.c`/`.h` + `autoencoder_v5_weights.h` 완성, firmware 팀 전달 대기 중
 
 임베디드팀(2명)은 1~6번과 병행해 CAN 수신 로직·OLED/부저 출력을 먼저 구현하며, `export/`에 결과물이 올라오는 시점에 통합한다.
 
@@ -92,50 +93,119 @@ CAN 트래픽 이상탐지 모델의 데이터 전처리·학습·경량화를 �
 
 - Replay(과거 정상 프레임을 그대로 재전송 — 콘텐츠상 정상과 구분 불가)와 Spoofing(정상 범위 내 미세한 값 변조)은 구조적으로 남은 한계. 필요 시 순서/이전 프레임 유사도 기반 특성으로 추가 개선 여지 있음(현재 범위 밖, 확정된 한계로 문서화)
 
-## X-CUBE-AI 변환 진행 상황 (일시 중단, 2026-08-03 기준)
+## MCU 이식 방식 최종 결정 (2026-08-03)
 
-**완료된 것:**
-- Colab에서 확정 모델을 `autoencoder_v5.h5`와 `autoencoder_v5.keras`(신형 포맷) 두 가지로 저장, 로컬 `ai/models/`에 다운로드 완료
-- STM32CubeIDE(workspace_2.2.0) 설치 완료 (ST-LINK 드라이버만 설치, SEGGER J-Link는 불필요해서 제외)
-- 테스트 프로젝트(`2026ESWContest_free_KGU`, NUCLEO-F103RB 타겟, C, Executable) 생성 완료
+**결론: X-CUBE-AI/STM32Cube AI Studio 둘 다 쓰지 않고, 추론 코드를 직접 C로 작성한다.**
 
-**막힌 지점 및 원인:**
-- 이 버전의 STM32CubeIDE에는 `Help > Manage Embedded Software Packages` 메뉴도, `.ioc Device Configuration File` 새로 만들기 마법사도 없음
-- 원인: **X-CUBE-AI가 `STM32Cube AI Studio`라는 별도 독립 프로그램으로 대체됨.** 더 이상 STM32CubeIDE 메뉴 안에서 바로 쓰는 방식이 아님
-- 이걸 쓰려면 추가로 4개 프로그램 설치 필요: `ST Edge AI Core`(변환 엔진), `STM32CubeMX`(독립 실행형), `STM32CubeProgrammer`(보드 플래싱용, 어차피 나중에 필요), `STM32Cube AI Studio`(모델 변환 도구 본체) — 설치 부담이 커서 여기서 일단 중단
+**시도했던 것과 실패 이유 (교훈으로 기록):**
+1. `STM32Cube AI Studio`(신형 독립 도구) 설치까지 완료했으나, 프로젝트 생성 단계에서 **STM32F103RB(Cortex-M3)가 지원 목록에 없어 실패** — ST 공식 문서상 "STM32F1/F2, L1, U0, MP1/MP2 미지원"
+2. 그래서 기존 방식(`X-CUBE-AI`를 독립 실행형 `STM32CubeMX`에서 설치해 사용)으로 전환 시도 → **X-CUBE-AI 10.2.1 릴리스 노트에도 Cortex-M7/M4/M0/M33/M55만 명시, M3 없음** — 이 역시 F103RB 미지원으로 확인됨
+3. 즉 **F103RB는 ST의 AI 자동 변환 툴체인 자체가 지원하지 않는 칩**임이 최종 확인됨 (부품은 이미 구매되어 교체하지 않기로 결정)
 
-**다음 세션 재개 순서:**
-1. 위 4개 프로그램 설치 (순서: ST Edge AI Core → STM32CubeMX → STM32CubeProgrammer → STM32Cube AI Studio)
-2. STM32Cube AI Studio에서 `ai/models/autoencoder_v5.keras` 임포트, 타겟 `STM32F103RB` 지정
-3. Analyze 실행 → Flash(128KB)/RAM(20KB) 예산 내 확인 (핵심 검증 지점, 아직 미검증)
-4. Generate Code → `network.c`/`network.h`를 `ai/export/`에 복사
-5. `ai/README.md`, `ai/export/README.md`, `firmware/X-CUBE-AI/README.md`, 프로젝트 메모리 갱신
+**대안 — 수작업 C 추론 구현:**
+- 우리 모델은 파라미터 약 4.8만 개(354→64→16→64→354)의 작은 오토인코더라, 72MHz Cortex-M3에서도 소프트웨어 부동소수점 연산으로 충분히 빠르게 처리 가능 (윈도우 1개=32프레임당 1회 추론이라 실시간 여유 충분)
+- Colab에서 학습된 가중치(`autoencoder_v5.keras`)를 그대로 불러와 C `float` 배열 헤더로 추출 (재학습 불필요, 이미 학습된 값을 옮기는 것뿐)
+- `ai/export/autoencoder_v5_weights.h` 생성 완료 (레이어 4개: dense 354→64, 64→16, 16→64, 64→354)
+- 판정에 쓰는 임계값(정상 검증셋 기준 재계산, 2026-08-03) — **float32 기준 초안, 아래 int8 양자화 이후 값으로 최종 교체됨**:
+  - `threshold_v5`(전체 354차원 평균 오차, 95백분위) = 0.07249655798340462
+  - `threshold_last2_strict`(마지막 2차원만의 평균 오차, 99.9백분위) = 0.01660382860087232
+  - 판정 규칙: 두 오차 중 하나라도 각자의 임계값을 넘으면 공격
+- 완료: `ai/export/inference.c`/`.h` 작성 완료 (Dense 순전파 4개 레이어 + 이중 임계값 OR 판정 로직)
 
-## 빠른 재학습 절차 (검증된 단계만)
+**Flash 용량 초과 발견 및 int8 양자화 (2026-08-03 추가):**
+- 위 `float32` 가중치 헤더(`autoencoder_v5_weights.h`)를 그대로 쓰면 가중치만 47,858개 × 4바이트 ≈ **187KB**로, F103RB의 Flash 전체(128KB)를 이미 초과 — 연산 속도만 확인하고 저장 용량은 확인하지 않았던 것이 원인
+- 해결: **가중치만 int8로 압축, 계산은 float32 유지**하는 방식 채택 (레이어별 `scale = max(|w|)/127`로 대칭 양자화 후 `int8`로 저장, 순전파 시 `weight_q * scale`로 복원해서 계산 — 속도가 아니라 저장 공간만 문제였으므로 연산 정밀도는 그대로 둠)
+- 검증: Colab에서 양자화 시뮬레이션(가중치만 반올림 후 float 복원) → 정상 오탐률 5.10% → 5.10%(변화 없음), 전체 공격 탐지율 기존 가중평균 약 52.93% → 양자화 후 52.80%(오차 범위 수준) — 성능 저하 사실상 없음 확인 후 적용
+- `ai/export/autoencoder_v5_weights_int8.h` 생성 완료 (레이어별 `layer{i}_weight_q`(int8) + `layer{i}_scale`(float) + `layer{i}_bias`(float, 크기가 작아 양자화하지 않음)) — 가중치 총량 약 46.7KB + bias 약 2KB ≈ **48.7KB**로 Flash 예산 안에 확보
+- 양자화 반영 후 재계산한 최종 임계값:
+  - `threshold_v5` = **0.07299177638757141**
+  - `threshold_last2_strict` = **0.01824626258918472**
+  - (기존 float32 전용 임계값 0.07249655798340462 / 0.01660382860087232는 더 이상 쓰지 않음 — 실제 MCU 연산 정밀도에 맞춘 값으로 교체)
+- 이제 `ai/export/` 폴더 구성: `inference.h`, `inference.c`(양자화 버전으로 수정 완료), `autoencoder_v5_weights_int8.h`(사용 중), `autoencoder_v5_weights.h`(과거 float32 버전, 참고용으로 보관)
 
-전체 실험 과정 중 실패한 시도(원-핫 인코딩, naive `delta_t`, max/top-3 채점 등)는 제외하고, **v5 결과를 그대로 재현하는 데 필요한 단계만** 정리.
+**빌드/용량 최종 검증 (2026-08-03):**
+- **RAM**: `vids_detect()` 실행 중 쓰는 임시 배열(`h0`+`h1`+`h2`+`output`) 합 약 2KB + 입력 벡터(1.4KB) ≈ **약 3.4KB** — F103RB RAM 20KB 중 일부만 사용, 여유 충분
+- **컴파일**: 로컬 gcc(`-Wall -Wextra -std=c99`)로 `inference.c` 문법·타입 체크 — 경고 없이 통과 (실제 ARM 툴체인 빌드는 firmware 팀 프로젝트 생성 후 재확인 필요)
+- **아직 안 된 것 (중요)**: `vids_detect()`는 이미 계산된 354차원 벡터를 입력받는 함수일 뿐, **원시 CAN 프레임(ID/DLC/Data/타임스탬프)을 그 354차원 벡터로 변환하는 코드(특성 추출 파이프라인)가 아직 없음** — 윈도우(32프레임) 수집, ID별 `id_delta_t` 계산(이전 타임스탬프 이력 필요), `unique_id_ratio`/`max_repeat_ratio` 집계를 C로 재구현해야 함. 이건 firmware 팀이 스스로 알 수 없는 모델 설계 지식이 필요하므로 AI팀이 작성 예정 (다음 단계)
+- 완료: 특성 추출 C 코드(`ai/export/feature_extract.c`/`.h`) 작성 완료
+  - CAN 프레임 1개씩 받아 32개 윈도우로 누적(`feature_extract_push()`), 다 차면 354차원 벡터 완성 후 리셋(논오버랩)
+  - ID별 마지막 타임스탬프 기록: 2048칸 배열(ID값=인덱스, RAM 8KB) — 정확도 우선, 해시테이블 방식 대신 채택(팀 논의 결정)
+  - `id_delta_t` 정규화에 쓰는 고정 상수(2026-08-03 노트북에서 확인): median=`0.01022195816040039`, log-min=`0.06283380660796888`, log-max=`11.873697951933963`
+  - 로컬 gcc 컴파일 검증 + 기능 테스트(32프레임 중 ID 2종 반복 패턴) 통과: `unique_id_ratio`/`max_repeat_ratio` 예상값과 정확히 일치
+- 이제 `ai/export/`에 firmware 팀 통합에 필요한 파일 전부 준비됨: `inference.h`/`.c`, `feature_extract.h`/`.c`, `autoencoder_v5_weights_int8.h`
+- 다음 단계: firmware 팀이 `Core/`의 CAN 수신 파이프라인에서 `feature_extract_push()` → (윈도우 완성 시) `vids_detect()` 순서로 호출하도록 통합
+
+## 빠른 재학습 절차 (검증된 단계만, 2026-08-03 노트북 실제 셀 기준 확인)
+
+전체 실험 과정 중 폐기된 시도(원-핫 인코딩 자체는 남아있지만 최종 특성엔 미반영, naive `delta_t`/`features_v2`, max/top-3 채점 등)는 제외하고, **v5를 그대로 재현하는 데 필요한 단계만** 정리. 데이터 전처리 단계는 재학습(`fit`) 없이도 필요하다(임계값 재계산 시에도 필요).
 
 1. **데이터 로드 + 라벨 정리**
    ```python
+   from google.colab import drive
+   drive.mount('/content/drive')
+   import pandas as pd
+   data_path = '/content/drive/MyDrive/2026ESWContest_free_KGU/data/'
+   files = ['Pre_train_D_0.csv', 'Pre_train_D_1.csv', 'Pre_train_D_2.csv',
+            'Pre_train_S_0.csv', 'Pre_train_S_1.csv', 'Pre_train_S_2.csv']
+   df = pd.concat([pd.read_csv(data_path + f) for f in files], ignore_index=True)
    df['SubClass'] = df['SubClass'].fillna('Normal')
    ```
-2. **프레임 특성 생성** (프레임당 11개: ID 정규화, DLC, DATA 8바이트, `id_delta_t`)
+2. **DATA 바이트 분리** (이후 스칼라 특성에서 재사용)
    ```python
-   df['id_delta_t'] = df.groupby(['file_id', 'Arbitration_ID'])['Timestamp'].diff()
-   # 이후 클리핑 + 정규화
+   data_bytes = df['Data'].str.split(' ', expand=True).apply(lambda col: col.apply(lambda x: int(x, 16)))
+   data_bytes.columns = [f"byte_{i}" for i in range(8)]
+   data_bytes = data_bytes / 255.0
    ```
-3. **윈도우화** (32프레임, `boundaries`로 파일 경계 보호) → 프레임 특성 352차원
-4. **윈도우 집계 특성 추가** → 354차원
+3. **스칼라 특성 생성** (ID 정규화 + DLC + DATA 8바이트 = 10차원, 원-핫 아님)
    ```python
-   vals, counts = np.unique(ids_arr[s:e], return_counts=True)
-   unique_id_ratio = len(vals) / WINDOW
-   max_repeat_ratio = counts.max() / WINDOW
+   id_norm = (df['Arbitration_ID'].apply(lambda x: int(x, 16)) / 0x7FF).rename('id_norm')
+   dlc_norm = (df['DLC'] / 8.0).rename('dlc')
+   features = pd.concat([id_norm, dlc_norm, data_bytes], axis=1)
    ```
-5. **정상/공격 분리 + train/val 분리** (정상만 학습, `test_size=0.2`)
-6. **오토인코더 학습** — Dense 354→64→16→64→354, Adam, MSE, 30 epoch, batch 256
-7. **이중 채점 + 판정**
+4. **`id_delta_t` 추가** (동일 CAN ID 재등장 간격, 파일 경계 보호용 `file_id` 필요) → 11차원
    ```python
-   threshold_full = np.percentile(val_errors, 95)
-   threshold_last2 = np.percentile(err_last2_normal, 99.9)
-   is_attack = (errors_full > threshold_full) | (err_last2 > threshold_last2)
+   file_id = np.zeros(len(df), dtype=int)
+   for idx, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:])):
+       file_id[start:end] = idx
+   df['file_id'] = file_id
+   id_delta_t = df.groupby(['file_id', 'Arbitration_ID'])['Timestamp'].diff()
+   id_delta_t = id_delta_t.fillna(id_delta_t.median())
+   id_delta_t_log = np.log1p(id_delta_t.values * 1000)
+   id_delta_t_norm = (id_delta_t_log - id_delta_t_log.min()) / (id_delta_t_log.max() - id_delta_t_log.min())
+   features_v3 = pd.concat([features, pd.Series(id_delta_t_norm, name='id_delta_t')], axis=1)
    ```
+   `boundaries`(파일별 누적 행 수)와 `WINDOW=32`는 EDA 직후 미리 정의되어 있어야 함(정확한 코드는 노트북 상단 참고).
+5. **윈도우화** → `X_windows_v3` (352차원)
+   ```python
+   feat_array_v3 = features_v3.values
+   X_windows_v3 = []
+   for start, end in zip(boundaries[:-1], boundaries[1:]):
+       n_windows = (end - start) // WINDOW
+       for i in range(n_windows):
+           s, e = start + i * WINDOW, start + (i + 1) * WINDOW
+           X_windows_v3.append(feat_array_v3[s:e].flatten())
+   X_windows_v3 = np.array(X_windows_v3)
+   ```
+6. **윈도우 집계 특성 추가** → `X_windows_v5` (354차원)
+   ```python
+   ids_arr = df['Arbitration_ID'].values
+   unique_id_ratio, max_repeat_ratio = [], []
+   for start, end in zip(boundaries[:-1], boundaries[1:]):
+       n_windows = (end - start) // WINDOW
+       for i in range(n_windows):
+           s, e = start + i * WINDOW, start + (i + 1) * WINDOW
+           vals, counts = np.unique(ids_arr[s:e], return_counts=True)
+           unique_id_ratio.append(len(vals) / WINDOW)
+           max_repeat_ratio.append(counts.max() / WINDOW)
+   X_windows_v5 = np.hstack([X_windows_v3, np.array(unique_id_ratio).reshape(-1,1), np.array(max_repeat_ratio).reshape(-1,1)])
+   ```
+7. **모델 불러오기 (재학습 불필요) + 분리**
+   ```python
+   from tensorflow import keras
+   autoencoder_v5 = keras.models.load_model('/content/drive/MyDrive/2026ESWContest_free_KGU/models/autoencoder_v5.keras')
+   X_normal_v5 = X_windows_v5[y_windows == 'Normal']
+   X_attack_v5 = X_windows_v5[y_windows == 'Attack']
+   X_train_v5, X_val_normal_v5 = train_test_split(X_normal_v5, test_size=0.2, random_state=42)
+   ```
+   `y_windows`(윈도우별 Normal/Attack 라벨)도 4~5단계 사이에 정의되어 있어야 함.
+
