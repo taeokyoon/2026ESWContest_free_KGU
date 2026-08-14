@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# 호스트 테스트 빌드 산출물
+test/test_pipeline
+*.o
+*.out
+
+# STM32CubeIDE 빌드 폴더 (나중에 프로젝트 생성 시)
+Debug/
+Release/
