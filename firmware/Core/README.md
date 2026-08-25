@@ -29,9 +29,32 @@ CubeMX가 생성한 NUCLEO-F103RB 프로젝트 소스와 V-IDS 수신 파이프�
 
 ## ⚠️ 미해결 항목
 
-아래 네 가지는 **아직 처리되지 않았습니다.** 통합 작업 전에 확인하세요.
+아래 다섯 가지는 **아직 처리되지 않았습니다.** 통합 작업 전에 확인하세요.
+1~3번은 서로 얽혀 있어 한 번에 처리해야 합니다(약 20줄 규모).
 
-### 1. CAN 초기화 중복
+### 1. 링크 실패 — HAL 콜백 심볼 충돌
+
+**현재 상태로 CubeIDE에서 빌드하면 링크 단계에서 실패합니다.**
+
+```
+multiple definition of `HAL_CAN_RxFifo0MsgPendingCallback'
+  Core/Src/main.c        (USER CODE BEGIN 4)
+  Core/Src/can_bxcan.c
+```
+
+CAN 수신 인터럽트 콜백을 양쪽이 각각 정의하고 있습니다. HAL은 이 함수를 하나만
+기대하므로 링커가 거부합니다. 프로젝트 전체에서 중복 심볼은 이 하나뿐입니다.
+
+| | 내용 |
+|---|---|
+| `main.c` (7줄) | 수신 개수만 증가. 브링업 확인용 임시 코드 |
+| `can_bxcan.c` (30줄) | 타임스탬프 부여, 프레임 필터링, `can_frame_t` 변환, 링버퍼 적재 |
+
+방침(제안): `main.c` 쪽을 제거합니다. 단, `main.c`의 OLED 출력이 그 콜백의 변수
+(`rx_count`, `RxHeader`, `RxData`)를 참조하므로 표시 내용을 링버퍼 통계로 함께
+교체해야 합니다. → 2·3번과 같이 처리
+
+### 2. CAN 초기화 중복
 
 `can.c`(CubeMX)와 `can_bxcan.c`가 같은 `hcan`을 각각 초기화하며 **설정값이 다릅니다.**
 
@@ -46,19 +69,23 @@ CubeMX가 생성한 NUCLEO-F103RB 프로젝트 소스와 V-IDS 수신 파이프�
 방침(제안): `can.c`는 CubeMX 생성 영역이므로 건드리지 않고, `can_bxcan.c`에서 초기화
 블록을 걷어내 **수신 처리 레이어로 축소**합니다.
 
-### 2. 파이프라인 미배선
+### 3. 파이프라인 미배선
 
 `main.c`는 `app_setup()` / `app_loop()`를 호출하지 않습니다. 지금 빌드하면 보드 브링업
 동작(OLED에 CAN RX 카운트 표시)만 하고 V-IDS 추론은 돌지 않습니다.
 
-### 3. AutoBusOff 비활성
+`can_bxcan.c`의 콜백은 `hcan != s_hcan`이면 즉시 반환하는데 `s_hcan`은
+`can_bxcan_start()`가 채웁니다. 즉 1번만 해결하고 배선을 넣지 않으면 CAN 수신이
+아무 동작도 하지 않게 됩니다.
+
+### 4. AutoBusOff 비활성
 
 `can.c:47`이 `AutoBusOff = DISABLE`입니다. 버스오프가 나면 리셋 전까지 수신이 영구
 정지합니다. `.ioc`에 해당 항목이 없어 CubeMX 기본값으로 생성된 상태이므로, CubeMX GUI에서
 `Connectivity > CAN > Parameter Settings > Automatic Bus-Off Management`를 Enabled로
 바꾸고 재생성해야 합니다. → 티켓 `[FW-3]`
 
-### 4. 추론 코드 include 경로
+### 5. 추론 코드 include 경로
 
 `can_ringbuffer.h`가 `feature_extract.h`(= `can_frame_t` 정의)를 참조하는데, 그 파일은
 `ai/export/`에 있고 `firmware/X-CUBE-AI/`는 비어 있습니다. 보드 빌드 시 include 경로에
@@ -70,8 +97,34 @@ CubeMX가 생성한 NUCLEO-F103RB 프로젝트 소스와 V-IDS 수신 파이프�
 | 범위 | 상태 |
 |---|---|
 | 호스트 테스트 | `../test/build_and_run.sh` — 링버퍼·파이프라인 [A][B][C] 통과 |
-| ARM 문법 검사 | `arm-none-eabi-gcc -fsyntax-only` 전 소스 무경고. **링크는 미검증** |
+| ARM 컴파일 | 전 소스 무경고 (`-Wall -Wextra`) |
+| ARM 링크 (브링업 범위) | ✅ `.elf` 생성. Flash 40,296 / 131,072 (30.7%), SRAM 3,268 / 20,480 (16.0%) |
+| ARM 링크 (팀 코드 포함) | ❌ 위 1번 심볼 충돌로 실패 |
 | 보드 실동작 | 브링업 범위(OLED, CAN RX 카운트)까지 확인. V-IDS 경로는 미검증 |
+
+### 배선 후 예상 용량
+
+심볼 충돌을 무시하고 전 코드를 유지한 채 링크한 결과입니다(`--gc-sections` 미적용).
+
+```
+Flash  101,480 / 131,072  (77.4%)
+SRAM    17,576 /  20,480  (85.8%)   여유 2,904 B
+```
+
+SRAM 상위 소비자:
+
+| 크기 | 심볼 | 비고 |
+|---|---|---|
+| 8,192 B | `last_timestamp` | `ID_TABLE_SIZE` 2048 × 4B |
+| 2,048 B | `id_seen` | `ID_TABLE_SIZE` 2048 × 1B |
+| 1,536 B | `_end` | 스택 1KB + 힙 512B 예약 |
+| 1,416 B | `s_feature_buf` | |
+| 1,408 B | `window_raw` | |
+| 1,024 B | `SSD1306_Buffer` | OLED 프레임버퍼 |
+| 1,024 B | `s_storage` | CAN 링버퍼 64슬롯 |
+
+ID 테이블 두 개가 10,240 B로 SRAM의 절반을 차지합니다. `ID_TABLE_SIZE`를 실제 데이터셋에
+등장하는 ID 수에 맞춰 줄이면 여유를 크게 확보할 수 있습니다(확인 필요 항목).
 
 ## 확인 대기
 

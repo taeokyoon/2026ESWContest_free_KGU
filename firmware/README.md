@@ -20,5 +20,9 @@ STM32CubeIDE 기반 NUCLEO-F103RB 펌웨어 영역입니다.
 보드에서 도는 것이 확인된 범위는 **브링업 동작(OLED 표시, CAN 수신 카운트)**까지입니다.
 V-IDS 파이프라인은 소스가 들어와 있으나 `main.c`에 배선되지 않아 아직 동작하지 않습니다.
 
-⚠️ 통합 전에 처리해야 할 미해결 항목(CAN 초기화 중복, AutoBusOff, include 경로)은
-`Core/README.md`의 "미해결 항목"을 참고하세요.
+> 🔴 **CubeIDE에서 지금 빌드하면 링크 단계에서 실패합니다.**
+> `HAL_CAN_RxFifo0MsgPendingCallback`이 `main.c`와 `can_bxcan.c` 양쪽에 정의돼 있습니다.
+> 브링업 범위만 빌드하면(팀 코드 제외) 정상적으로 `.elf`가 생성됩니다.
+
+⚠️ 통합 전에 처리해야 할 미해결 항목 5건(심볼 충돌, CAN 초기화 중복, 파이프라인 미배선,
+AutoBusOff, include 경로)은 `Core/README.md`의 "미해결 항목"을 참고하세요.
