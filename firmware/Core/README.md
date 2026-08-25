@@ -1,24 +1,78 @@
 # firmware/Core — 애플리케이션 코드
 
-수신 파이프라인 코드입니다. **하드웨어 무관 핵심**과 **STM32 접착부**가 분리되어 있습니다.
+CubeMX가 생성한 NUCLEO-F103RB 프로젝트 소스와 V-IDS 수신 파이프라인이 함께 있습니다.
 
-## 파일
+## 파일 구성
+
+### V-IDS 파이프라인
 
 | 파일 | 역할 | 컴파일 |
 |---|---|---|
 | `Inc/can_ringbuffer.h` | SPSC 링버퍼(ISR↔메인루프 분리). 헤더 온리(inline). | 호스트 O / 보드 O |
 | `Inc/vids_pipeline.h` · `Src/vids_pipeline.c` | 소비자: 링버퍼→feature_extract→vids_detect→결과알림. HAL 무관. | 호스트 O / 보드 O |
-| `Inc/can_bxcan.h` · `Src/can_bxcan.c` | bxCAN Silent 500k 설정 + RX 인터럽트(생산자) + µs 시계. **STM32 HAL 필요.** | 보드 O |
-| `Src/app.c` | 전체 배선 예시(app_setup / app_loop). CubeMX main.c에서 호출. | 보드 O |
+| `Inc/can_bxcan.h` · `Src/can_bxcan.c` | bxCAN 설정 + RX 인터럽트(생산자) + µs 시계. **STM32 HAL 필요.** | 보드 O |
+| `Src/app.c` | 전체 배선(app_setup / app_loop). | 보드 O |
 
-- **호스트 무관 핵심**(ringbuffer, pipeline)은 `../test`에서 PC로 검증됩니다.
-- **HAL 접착부**(can_bxcan.c, app.c)는 STM32CubeIDE/CubeMX 프로젝트 안에서만 컴파일됩니다.
+### CubeMX 생성 코드
 
-## 통합 시 주의
+`main.c`, `can.c`, `gpio.c`, `i2c.c`, `usart.c`, `stm32f1xx_it.c`, `stm32f1xx_hal_msp.c`,
+`system_stm32f1xx.c`, `syscalls.c`, `sysmem.c`, `Startup/`
 
-1. CubeMX로 CAN 페리페럴을 활성화(핸들 `hcan` 생성)해 두면, 저수준 설정
-   (비트타이밍/Silent/필터/인터럽트)은 `can_bxcan.c`가 코드로 덮습니다.
-2. 태옥의 추론 코드(`feature_extract`/`inference`/가중치)는 `firmware/X-CUBE-AI/`로
-   통합합니다. `can_ringbuffer.h`가 `feature_extract.h`(=`can_frame_t`)를 참조하므로
-   include 경로에 X-CUBE-AI를 추가하세요.
-3. `timestamp` 단위는 태옥 학습 기준과 맞춰야 합니다(확인 대기 항목).
+**`.ioc` 재생성 시 덮어써집니다.** USER CODE 구간 밖은 손으로 고치지 마세요.
+페리페럴 설정 변경은 STM32CubeMX GUI에서 하고 재생성합니다.
+`.ioc`에는 NVIC 설정도 들어 있으므로, 재생성 후에는 `git diff`로 인터럽트 설정이
+의도치 않게 바뀌지 않았는지 확인하세요.
+
+### 외부 라이브러리
+
+`ssd1306.c/h`, `ssd1306_fonts.c/h`, `ssd1306_conf.h` — OLED 구동. CubeMX 생성물이 아닙니다.
+
+## ⚠️ 미해결 항목
+
+아래 네 가지는 **아직 처리되지 않았습니다.** 통합 작업 전에 확인하세요.
+
+### 1. CAN 초기화 중복
+
+`can.c`(CubeMX)와 `can_bxcan.c`가 같은 `hcan`을 각각 초기화하며 **설정값이 다릅니다.**
+
+| | CubeMX `can.c` | `can_bxcan.c` |
+|---|---|---|
+| 모드 | `CAN_MODE_NORMAL` (42행) | `CAN_MODE_SILENT` (91행) |
+| AutoBusOff | `DISABLE` (47행) | — |
+
+현재는 `main.c`가 `app.c`를 호출하지 않아 **`can.c`의 NORMAL만 적용**됩니다.
+배선을 넣는 순간 나중에 실행되는 쪽이 이깁니다.
+
+방침(제안): `can.c`는 CubeMX 생성 영역이므로 건드리지 않고, `can_bxcan.c`에서 초기화
+블록을 걷어내 **수신 처리 레이어로 축소**합니다.
+
+### 2. 파이프라인 미배선
+
+`main.c`는 `app_setup()` / `app_loop()`를 호출하지 않습니다. 지금 빌드하면 보드 브링업
+동작(OLED에 CAN RX 카운트 표시)만 하고 V-IDS 추론은 돌지 않습니다.
+
+### 3. AutoBusOff 비활성
+
+`can.c:47`이 `AutoBusOff = DISABLE`입니다. 버스오프가 나면 리셋 전까지 수신이 영구
+정지합니다. `.ioc`에 해당 항목이 없어 CubeMX 기본값으로 생성된 상태이므로, CubeMX GUI에서
+`Connectivity > CAN > Parameter Settings > Automatic Bus-Off Management`를 Enabled로
+바꾸고 재생성해야 합니다. → 티켓 `[FW-3]`
+
+### 4. 추론 코드 include 경로
+
+`can_ringbuffer.h`가 `feature_extract.h`(= `can_frame_t` 정의)를 참조하는데, 그 파일은
+`ai/export/`에 있고 `firmware/X-CUBE-AI/`는 비어 있습니다. 보드 빌드 시 include 경로에
+`ai/export/`를 추가하거나 파일을 `X-CUBE-AI/`로 옮겨야 합니다.
+호스트 테스트는 `ai/export/`를 자동으로 찾으므로 영향받지 않습니다.
+
+## 검증 상태
+
+| 범위 | 상태 |
+|---|---|
+| 호스트 테스트 | `../test/build_and_run.sh` — 링버퍼·파이프라인 [A][B][C] 통과 |
+| ARM 문법 검사 | `arm-none-eabi-gcc -fsyntax-only` 전 소스 무경고. **링크는 미검증** |
+| 보드 실동작 | 브링업 범위(OLED, CAN RX 카운트)까지 확인. V-IDS 경로는 미검증 |
+
+## 확인 대기
+
+- `timestamp` 단위를 학습 기준과 맞춰야 합니다.
