@@ -10,6 +10,11 @@ ai/models/*
 # STM32CubeIDE 빌드 산출물
 firmware/**/Debug/
 firmware/**/Release/
+
+# STM32CubeIDE / Eclipse 워크스페이스 (개인 환경, 공유하지 않음)
+.metadata/
+RemoteSystemsTempFiles/
+.recommenders/
 *.o
 *.elf
 *.bin

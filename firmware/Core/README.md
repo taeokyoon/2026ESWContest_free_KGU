@@ -29,17 +29,18 @@ CubeMX가 생성한 NUCLEO-F103RB 프로젝트 소스와 V-IDS 수신 파이프�
 
 ## ⚠️ 미해결 항목
 
-아래 다섯 가지는 **아직 처리되지 않았습니다.** 통합 작업 전에 확인하세요.
+아래 네 가지는 **아직 처리되지 않았습니다.** 통합 작업 전에 확인하세요.
 1~3번은 서로 얽혀 있어 한 번에 처리해야 합니다(약 20줄 규모).
 
 ### 1. 링크 실패 — HAL 콜백 심볼 충돌
 
 **현재 상태로 CubeIDE에서 빌드하면 링크 단계에서 실패합니다.**
+컴파일은 31개 파일 전부 통과하며(경고 0), 마지막 링크에서 이 에러 하나만 남습니다.
 
 ```
-multiple definition of `HAL_CAN_RxFifo0MsgPendingCallback'
-  Core/Src/main.c        (USER CODE BEGIN 4)
-  Core/Src/can_bxcan.c
+ld: ./Core/Src/main.o: in function `HAL_CAN_RxFifo0MsgPendingCallback':
+main.c:227: multiple definition of `HAL_CAN_RxFifo0MsgPendingCallback';
+            can_bxcan.o:can_bxcan.c:113: first defined here
 ```
 
 CAN 수신 인터럽트 콜백을 양쪽이 각각 정의하고 있습니다. HAL은 이 함수를 하나만
@@ -85,19 +86,25 @@ CAN 수신 인터럽트 콜백을 양쪽이 각각 정의하고 있습니다. HA
 `Connectivity > CAN > Parameter Settings > Automatic Bus-Off Management`를 Enabled로
 바꾸고 재생성해야 합니다. → 티켓 `[FW-3]`
 
-### 5. 추론 코드 include 경로
+## 해결된 항목
 
-`can_ringbuffer.h`가 `feature_extract.h`(= `can_frame_t` 정의)를 참조하는데, 그 파일은
-`ai/export/`에 있고 `firmware/X-CUBE-AI/`는 비어 있습니다. 보드 빌드 시 include 경로에
-`ai/export/`를 추가하거나 파일을 `X-CUBE-AI/`로 옮겨야 합니다.
-호스트 테스트는 `ai/export/`를 자동으로 찾으므로 영향받지 않습니다.
+### 추론 코드 include 경로 (해결)
+
+`can_ringbuffer.h`가 `feature_extract.h`(= `can_frame_t` 정의)를 참조하는데 그 파일은
+`ai/export/`에 있어, 프로젝트 폴더 밖이라 CubeIDE가 찾지 못했습니다.
+
+`ai/export`를 **링크 폴더 `ai_export`로 프로젝트에 연결**해 해결했습니다(`.project`,
+`.cproject`에 반영). 파일을 복사하지 않으므로 `ai/export`가 갱신되면 그대로 따라갑니다.
+경로는 `PARENT-1-PROJECT_LOC/ai/export` 형태의 상대 표기라 OS·설치 위치와 무관합니다.
+
+`firmware/X-CUBE-AI/`는 사용하지 않습니다.
 
 ## 검증 상태
 
 | 범위 | 상태 |
 |---|---|
 | 호스트 테스트 | `../test/build_and_run.sh` — 링버퍼·파이프라인 [A][B][C] 통과 |
-| ARM 컴파일 | 전 소스 무경고 (`-Wall -Wextra`) |
+| CubeIDE 빌드 | 컴파일 31개 파일 전부 통과, 경고 0. 링크는 위 1번으로 실패 |
 | ARM 링크 (브링업 범위) | ✅ `.elf` 생성. Flash 40,296 / 131,072 (30.7%), SRAM 3,268 / 20,480 (16.0%) |
 | ARM 링크 (팀 코드 포함) | ❌ 위 1번 심볼 충돌로 실패 |
 | 보드 실동작 | 브링업 범위(OLED, CAN RX 카운트)까지 확인. V-IDS 경로는 미검증 |
