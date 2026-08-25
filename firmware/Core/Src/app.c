@@ -5,7 +5,7 @@
 
 extern CAN_HandleTypeDef hcan;
 
-#define CAN_RB_SLOTS 256
+#define CAN_RB_SLOTS 64
 static can_frame_t s_storage[CAN_RB_SLOTS];
 static can_rb_t    s_rb;
 
@@ -18,5 +18,6 @@ void app_setup(void)
 
 void app_loop(void)
 {
+    can_bxcan_time_service();
     vids_pipeline_poll();
 }
