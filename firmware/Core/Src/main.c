@@ -27,6 +27,9 @@
 /* USER CODE BEGIN Includes */
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
+#include "app.h"
+#include "vids_pipeline.h"
+#include "can_bxcan.h"
 #include <stdio.h>
 
 /* USER CODE END Includes */
@@ -49,9 +52,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-extern volatile uint32_t rx_count;
-extern CAN_RxHeaderTypeDef RxHeader;
-extern uint8_t RxData[8];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -102,44 +103,23 @@ int main(void)
   ssd1306_Fill(Black);
   ssd1306_SetCursor(2, 0);
   ssd1306_WriteString("V-IDS", Font_7x10, White);
-  ssd1306_SetCursor(2, 20);
-  ssd1306_WriteString("OLED OK", Font_6x8, White);
   ssd1306_UpdateScreen();
 
-  hcan.Init.Mode = CAN_MODE_NORMAL;
-  if (HAL_CAN_Init(&hcan) != HAL_OK)
+  int setup_rc = app_setup();
+  if (setup_rc != 0)
   {
-    Error_Handler();
+    char err[24];
+    sprintf(err, "CAN FAIL:%d", setup_rc);
+    ssd1306_SetCursor(2, 16);
+    ssd1306_WriteString(err, Font_6x8, White);
+    ssd1306_UpdateScreen();
+    __disable_irq();
+    while (1)
+    {
+    }
   }
 
-  CAN_FilterTypeDef sFilterConfig;
-  sFilterConfig.FilterBank = 0;
-  sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
-  sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
-  sFilterConfig.FilterIdHigh = 0x0000;
-  sFilterConfig.FilterIdLow = 0x0000;
-  sFilterConfig.FilterMaskIdHigh = 0x0000;
-  sFilterConfig.FilterMaskIdLow = 0x0000;
-  sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0;
-  sFilterConfig.FilterActivation = ENABLE;
-  sFilterConfig.SlaveStartFilterBank = 14;
-
-  if (HAL_CAN_ConfigFilter(&hcan, &sFilterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  if (HAL_CAN_Start(&hcan) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  if (HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  ssd1306_SetCursor(2, 40);
+  ssd1306_SetCursor(2, 16);
   ssd1306_WriteString("CAN READY", Font_6x8, White);
   ssd1306_UpdateScreen();
 
@@ -147,35 +127,42 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  uint32_t last_ui = 0;
+
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    app_loop();
 
-	     char buf[24];
+    if (HAL_GetTick() - last_ui >= 500u)
+    {
+      last_ui = HAL_GetTick();
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 
-	     // 수신 개수
-	     sprintf(buf, "RX: %lu", rx_count);
-	     ssd1306_SetCursor(2, 30);
-	     ssd1306_WriteString(buf, Font_6x8, White);
+      vids_stats_t st = vids_pipeline_stats();
+      char buf[32];
 
-	     // 마지막 수신 프레임의 ID와 길이
-	     sprintf(buf, "ID:%03lX DLC:%lu", RxHeader.StdId, RxHeader.DLC);
-	     ssd1306_SetCursor(2, 40);
-	     ssd1306_WriteString(buf, Font_6x8, White);
+      ssd1306_Fill(Black);
+      ssd1306_SetCursor(2, 0);
+      ssd1306_WriteString("V-IDS", Font_7x10, White);
 
-	     // 데이터 앞 4바이트
-	     sprintf(buf, "D:%02X %02X %02X %02X",
-	             RxData[0], RxData[1], RxData[2], RxData[3]);
-	     ssd1306_SetCursor(2, 50);
-	     ssd1306_WriteString(buf, Font_6x8, White);
+      sprintf(buf, "RX:%lu W:%lu", st.frames_consumed, st.windows_processed);
+      ssd1306_SetCursor(2, 16);
+      ssd1306_WriteString(buf, Font_6x8, White);
 
-	     ssd1306_UpdateScreen();
+      sprintf(buf, "ATK:%lu DRP:%lu", st.attacks_detected, st.frames_dropped);
+      ssd1306_SetCursor(2, 28);
+      ssd1306_WriteString(buf, Font_6x8, White);
 
-	     HAL_Delay(200);
-	   }
+      sprintf(buf, "REJ:%lu", can_bxcan_rejected());
+      ssd1306_SetCursor(2, 40);
+      ssd1306_WriteString(buf, Font_6x8, White);
+
+      ssd1306_UpdateScreen();
+    }
+  }
   /* USER CODE END 3 */
 }
 
@@ -219,17 +206,7 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-CAN_RxHeaderTypeDef RxHeader;
-uint8_t RxData[8];
-volatile uint32_t rx_count = 0;
 
-void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
-{
-  if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
-  {
-    rx_count++;
-  }
-}
 /* USER CODE END 4 */
 
 /**
