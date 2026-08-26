@@ -1,3 +1,4 @@
+#include "app.h"
 #include "can_ringbuffer.h"
 #include "vids_pipeline.h"
 #include "can_bxcan.h"
@@ -9,11 +10,11 @@ extern CAN_HandleTypeDef hcan;
 static can_frame_t s_storage[CAN_RB_SLOTS];
 static can_rb_t    s_rb;
 
-void app_setup(void)
+int app_setup(void)
 {
     can_rb_init(&s_rb, s_storage, CAN_RB_SLOTS);
     vids_pipeline_init(&s_rb);
-    can_bxcan_start(&hcan, &s_rb);
+    return can_bxcan_start(&hcan, &s_rb);
 }
 
 void app_loop(void)

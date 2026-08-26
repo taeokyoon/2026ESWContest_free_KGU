@@ -87,19 +87,6 @@ int can_bxcan_start(void *hcan_handle, can_rb_t *rb)
     s_rb       = rb;
     s_rejected = 0u;
 
-    s_hcan->Init.Prescaler     = 9;
-    s_hcan->Init.Mode          = CAN_MODE_SILENT;
-    s_hcan->Init.SyncJumpWidth = CAN_SJW_1TQ;
-    s_hcan->Init.TimeSeg1      = CAN_BS1_6TQ;
-    s_hcan->Init.TimeSeg2      = CAN_BS2_1TQ;
-    s_hcan->Init.TimeTriggeredMode    = DISABLE;
-    s_hcan->Init.AutoBusOff           = DISABLE;
-    s_hcan->Init.AutoWakeUp           = DISABLE;
-    s_hcan->Init.AutoRetransmission   = DISABLE;
-    s_hcan->Init.ReceiveFifoLocked    = DISABLE;
-    s_hcan->Init.TransmitFifoPriority = DISABLE;
-
-    if (HAL_CAN_Init(s_hcan) != HAL_OK)      return -1;
     if (can_config_filter(s_hcan) != 0)      return -2;
 
     dwt_cyccnt_init();
