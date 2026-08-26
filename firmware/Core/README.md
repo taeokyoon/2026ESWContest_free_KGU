@@ -29,57 +29,43 @@ CubeMX가 생성한 NUCLEO-F103RB 프로젝트 소스와 V-IDS 수신 파이프�
 
 ## ⚠️ 미해결 항목
 
-아래 네 가지는 **아직 처리되지 않았습니다.** 통합 작업 전에 확인하세요.
-1~3번은 서로 얽혀 있어 한 번에 처리해야 합니다(약 20줄 규모).
+### 1. OLED 갱신이 파이프라인을 멈춤 (신규)
 
-### 1. 링크 실패 — HAL 콜백 심볼 충돌
+`ssd1306_UpdateScreen()`은 8페이지 × 128바이트를 **블로킹**으로 전송합니다
+(`HAL_I2C_Mem_Write(..., HAL_MAX_DELAY)`). `i2c.c:41`의 `ClockSpeed`가 100 kHz이므로
+1회 갱신에 약 1,150바이트 × 90 µs ≈ **100 ms**가 걸리고, 그동안 `app_loop()`가
+호출되지 않아 링버퍼가 소비되지 않습니다.
 
-**현재 상태로 CubeIDE에서 빌드하면 링크 단계에서 실패합니다.**
-컴파일은 31개 파일 전부 통과하며(경고 0), 마지막 링크에서 이 에러 하나만 남습니다.
+2,700 fps 기준 100 ms면 270프레임이 쌓이는데 링버퍼는 64슬롯이므로 **추론 속도와
+무관하게 드롭이 발생**합니다. `main.c`의 갱신 주기를 500 ms로 두어 영향을 20%로
+줄였으나 근본 해결은 아닙니다.
+
+영향 범위: 드롭 카운터(`DRP`)만 오염됩니다. `[FW-4]`의 추론 시간은 DWT로
+`vids_detect()` 구간만 측정하므로 이 문제와 무관합니다.
+
+방침(제안): `ClockSpeed`는 `.ioc` 소관이므로 `[FW-3]`의 CubeMX 재생성 때 400 kHz로
+올립니다(약 25 ms로 감소). 그 이상이 필요하면 변경된 페이지만 전송하는 부분 갱신이나
+I2C DMA를 검토합니다. **브링업 단계에서는 애널라이저 송신 속도를 낮춰 회피합니다.**
+
+### 2. 스택 여유가 얇음 (신규)
+
+`vids_detect()`가 지역 배열(`h0[64] h1[16] h2[64] output[354]`, 전부 float)로
+**스택 2,064 B**를 씁니다(-O0 기준, `-fstack-usage` 실측).
 
 ```
-ld: ./Core/Src/main.o: in function `HAL_CAN_RxFifo0MsgPendingCallback':
-main.c:227: multiple definition of `HAL_CAN_RxFifo0MsgPendingCallback';
-            can_bxcan.o:can_bxcan.c:113: first defined here
+main(80) → vids_pipeline_poll(32) → vids_detect(2,064) → dense_layer(48)  ≈ 2,224 B
++ CAN 수신 ISR 중첩(예외 프레임 + 콜백 지역변수)                          ≈   150 B
+                                                                    합계 ≈ 2,400 B
 ```
 
-CAN 수신 인터럽트 콜백을 양쪽이 각각 정의하고 있습니다. HAL은 이 함수를 하나만
-기대하므로 링커가 거부합니다. 프로젝트 전체에서 중복 심볼은 이 하나뿐입니다.
+SRAM 잔여가 3,028 B이므로 **여유는 약 600 B**입니다. 링크는 통과하지만 보드에서
+스택 오버플로가 나면 `.bss` 상단(`last_timestamp`)을 침범해 원인 추적이 어려운
+오동작으로 나타납니다.
 
-| | 내용 |
-|---|---|
-| `main.c` (7줄) | 수신 개수만 증가. 브링업 확인용 임시 코드 |
-| `can_bxcan.c` (30줄) | 타임스탬프 부여, 프레임 필터링, `can_frame_t` 변환, 링버퍼 적재 |
+`[AI-2]` 정수화 시 이 배열들이 int8/int16이 되어 스택 사용량이 1/4~1/2로 줄어듭니다.
+정수화를 서둘러야 할 두 번째 이유입니다.
 
-방침(제안): `main.c` 쪽을 제거합니다. 단, `main.c`의 OLED 출력이 그 콜백의 변수
-(`rx_count`, `RxHeader`, `RxData`)를 참조하므로 표시 내용을 링버퍼 통계로 함께
-교체해야 합니다. → 2·3번과 같이 처리
-
-### 2. CAN 초기화 중복
-
-`can.c`(CubeMX)와 `can_bxcan.c`가 같은 `hcan`을 각각 초기화하며 **설정값이 다릅니다.**
-
-| | CubeMX `can.c` | `can_bxcan.c` |
-|---|---|---|
-| 모드 | `CAN_MODE_NORMAL` (42행) | `CAN_MODE_SILENT` (91행) |
-| AutoBusOff | `DISABLE` (47행) | — |
-
-현재는 `main.c`가 `app.c`를 호출하지 않아 **`can.c`의 NORMAL만 적용**됩니다.
-배선을 넣는 순간 나중에 실행되는 쪽이 이깁니다.
-
-방침(제안): `can.c`는 CubeMX 생성 영역이므로 건드리지 않고, `can_bxcan.c`에서 초기화
-블록을 걷어내 **수신 처리 레이어로 축소**합니다.
-
-### 3. 파이프라인 미배선
-
-`main.c`는 `app_setup()` / `app_loop()`를 호출하지 않습니다. 지금 빌드하면 보드 브링업
-동작(OLED에 CAN RX 카운트 표시)만 하고 V-IDS 추론은 돌지 않습니다.
-
-`can_bxcan.c`의 콜백은 `hcan != s_hcan`이면 즉시 반환하는데 `s_hcan`은
-`can_bxcan_start()`가 채웁니다. 즉 1번만 해결하고 배선을 넣지 않으면 CAN 수신이
-아무 동작도 하지 않게 됩니다.
-
-### 4. AutoBusOff 비활성
+### 3. AutoBusOff 비활성
 
 `can.c:47`이 `AutoBusOff = DISABLE`입니다. 버스오프가 나면 리셋 전까지 수신이 영구
 정지합니다. `.ioc`에 해당 항목이 없어 CubeMX 기본값으로 생성된 상태이므로, CubeMX GUI에서
@@ -87,6 +73,35 @@ CAN 수신 인터럽트 콜백을 양쪽이 각각 정의하고 있습니다. HA
 바꾸고 재생성해야 합니다. → 티켓 `[FW-3]`
 
 ## 해결된 항목
+
+### 콜백 심볼 충돌 · CAN 초기화 중복 · 파이프라인 미배선 (해결, `[FW-5]`)
+
+세 가지가 얽혀 있어 함께 처리했습니다.
+
+| 대상 | 처리 |
+|---|---|
+| `main.c` 콜백(`HAL_CAN_RxFifo0MsgPendingCallback`)과 `rx_count`/`RxHeader`/`RxData` | 삭제. 정의는 `can_bxcan.c` 하나만 남음 |
+| `main.c`의 CAN 재초기화·필터·Start·ActivateNotification 32줄 | 삭제 → `app_setup()` 호출로 대체 |
+| `can_bxcan_start()`의 `Init.*` 대입과 `HAL_CAN_Init()` | 삭제. 페리페럴 설정은 `can.c`(CubeMX)만 담당 |
+| `main.c` 메인 루프 | `app_loop()`를 매 반복 호출. `HAL_Delay(200)` 제거하고 `HAL_GetTick()` 기반 500 ms 주기 UI로 교체 |
+| OLED 표시 | 링버퍼·파이프라인 통계(`RX`/`W`/`ATK`/`DRP`/`REJ`)로 교체 |
+| `Inc/app.h` | 신규. `app_setup()`은 `can_bxcan_start()`의 코드를 반환하도록 변경 |
+
+**CAN 설정의 단일 출처는 `can.c`(= `.ioc`)입니다.** `can_bxcan.c`가 `Init.*`를 덮어쓰면
+`[FW-3]`에서 CubeMX로 AutoBusOff를 켜도 다시 `DISABLE`로 되돌아가기 때문입니다.
+따라서 모드는 현재 `.ioc`의 `CAN_MODE_NORMAL`이 적용됩니다.
+
+`app_setup()` 실패 시 OLED에 `CAN FAIL:<코드>`를 표시하고 정지합니다
+(`-2` 필터, `-3` 인터럽트 활성화, `-4` Start).
+
+### 동작 모드 — NORMAL 채택 근거 (확정)
+
+IDS는 버스에 개입하지 않아야 하므로 최종 목표는 SILENT입니다. 다만 SILENT는 ACK를
+보내지 않으므로, **현재 검증 환경(USB-CAN 애널라이저 + 보드, 2노드)에서는 ACK를 줄
+노드가 없어** 송신 측이 ACK 에러·재전송을 반복하다 bus-off로 갑니다.
+
+따라서 브링업·검증 단계는 NORMAL로 진행합니다. SILENT 전환은 ACK를 제공하는 3번째
+노드나 실차 버스가 확보된 뒤 별도로 검증합니다(미착수).
 
 ### 추론 코드 include 경로 (해결)
 
@@ -103,20 +118,32 @@ CAN 수신 인터럽트 콜백을 양쪽이 각각 정의하고 있습니다. HA
 
 | 범위 | 상태 |
 |---|---|
-| 호스트 테스트 | `../test/build_and_run.sh` — 링버퍼·파이프라인 [A][B][C] 통과 |
-| CubeIDE 빌드 | 컴파일 31개 파일 전부 통과, 경고 0. 링크는 위 1번으로 실패 |
-| ARM 링크 (브링업 범위) | ✅ `.elf` 생성. Flash 40,296 / 131,072 (30.7%), SRAM 3,268 / 20,480 (16.0%) |
-| ARM 링크 (팀 코드 포함) | ❌ 위 1번 심볼 충돌로 실패 |
-| 보드 실동작 | 브링업 범위(OLED, CAN RX 카운트)까지 확인. V-IDS 경로는 미검증 |
+| 호스트 테스트 | ✅ `../test/build_and_run.sh` — [A][B][C] 전부 통과 |
+| ARM 컴파일 (전 코드) | ✅ 32개 전부 통과, **경고 0** (`-Wall`, -O0/-Og 양쪽) |
+| ARM 링크 (전 코드) | ✅ `.elf` 생성. 중복 심볼 없음(`nm`으로 콜백 정의 1개 확인) |
+| 파이프라인 링크 확인 | ✅ `app_setup`/`app_loop`/`vids_detect`/`vids_pipeline_poll`이 `--gc-sections` 후에도 남음 |
+| CubeIDE 빌드 (Debug) | ✅ `blink_test.elf` 생성. `Debug/ai_export/`에 링크 폴더 오브젝트 2개 생성 확인 |
+| 보드 실동작 | ⬜ 미검증 — V-IDS 경로는 아직 보드에서 돌린 적 없음 |
 
-### 배선 후 예상 용량
+명령줄 검증에 쓴 툴체인은 `/Applications/ArmGNUToolchain/15.3.rel1`이며, 링크 옵션은
+`-T STM32F103RBTX_FLASH.ld -specs=nano.specs -specs=nosys.specs -Wl,--gc-sections`,
+라이브러리는 `-lc -lm`입니다.
 
-심볼 충돌을 무시하고 전 코드를 유지한 채 링크한 결과입니다(`--gc-sections` 미적용).
+macOS에서 CubeIDE 헤드리스 빌드(`-application org.eclipse.cdt.managedbuilder.core.headlessbuild`)는
+빌드가 성공해도 런처가 `Java was started but returned exit code=1` 창을 띄웁니다.
+**종료 코드로 성공 여부를 판단하지 말고 `Debug/blink_test.elf`의 생성 시각을 확인하세요.**
 
-```
-Flash  101,480 / 131,072  (77.4%)
-SRAM    17,576 /  20,480  (85.8%)   여유 2,904 B
-```
+### 실측 용량 (`[FW-5]` 배선 완료 상태)
+
+| 빌드 | Flash | SRAM | 잔여 SRAM |
+|---|---|---|---|
+| **CubeIDE Debug** | **74,644 / 131,072 (56.9%)** | **17,444 / 20,480 (85.2%)** | **3,036 B** |
+| 명령줄 `-O0` | 74,756 / 131,072 (57.0%) | 17,452 / 20,480 (85.2%) | 3,028 B |
+| 명령줄 `-Og` | 69,540 / 131,072 (53.0%) | 17,444 / 20,480 (85.2%) | 3,036 B |
+
+이전 문서의 "배선 후 예상 Flash 77.4%"는 `--gc-sections` 미적용 추정치였습니다.
+실제로는 **Flash에 약 43% 여유**가 있어, `[AI-2]`에서 `expf`/`log1pf`를 LUT로
+대체할 공간은 충분합니다. 반면 **SRAM은 예상대로 85.2%로 빠듯합니다.**
 
 SRAM 상위 소비자:
 
