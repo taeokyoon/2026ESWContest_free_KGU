@@ -30,4 +30,34 @@ cc -std=c11 -O2 -Wall -Wextra \
    "$AI_EXPORT/inference.c" \
    -lm -o "$HERE/test_pipeline"
 
+# [D] Python 정수 시뮬레이션 <-> C 구현 판정 일치
+# 벡터 파일은 ai/notebooks/06_export_vectors.py 가 만든다 (데이터셋 필요).
+if [ -f "$HERE/vectors.bin" ]; then
+    cc -std=c11 -O2 -Wall -Wextra \
+       -I"$FW/Core/Inc" -I"$AI_EXPORT" \
+       "$HERE/test_quant_parity.c" \
+       "$AI_EXPORT/inference.c" \
+       -lm -o "$HERE/test_quant_parity"
+    "$HERE/test_quant_parity" "$HERE/vectors.bin"
+else
+    echo
+    echo "[D] 정수화 대조 — 건너뜀 (vectors.bin 없음)"
+    echo "    생성: VIDS_DATA=<데이터셋> python3 ai/notebooks/06_export_vectors.py"
+fi
+
 "$HERE/test_pipeline"
+
+# [D] Python 정수 시뮬레이션 <-> C 구현 판정 일치
+# 벡터 파일은 ai/notebooks/06_export_vectors.py 가 만든다 (데이터셋 필요).
+if [ -f "$HERE/vectors.bin" ]; then
+    cc -std=c11 -O2 -Wall -Wextra \
+       -I"$FW/Core/Inc" -I"$AI_EXPORT" \
+       "$HERE/test_quant_parity.c" \
+       "$AI_EXPORT/inference.c" \
+       -lm -o "$HERE/test_quant_parity"
+    "$HERE/test_quant_parity" "$HERE/vectors.bin"
+else
+    echo
+    echo "[D] 정수화 대조 — 건너뜀 (vectors.bin 없음)"
+    echo "    생성: VIDS_DATA=<데이터셋> python3 ai/notebooks/06_export_vectors.py"
+fi
