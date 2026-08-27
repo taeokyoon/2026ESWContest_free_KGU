@@ -41,7 +41,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define UI_CYCLES_PER_CENTI_MS 720u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -63,7 +63,20 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void ui_timing_line(char *out, const char *tag, const vids_timing_stat_t *st)
+{
+  if (st->samples == 0u)
+  {
+    sprintf(out, "%s --.--/--.--", tag);
+    return;
+  }
 
+  uint32_t lo = st->min_cycles / UI_CYCLES_PER_CENTI_MS;
+  uint32_t hi = st->max_cycles / UI_CYCLES_PER_CENTI_MS;
+
+  sprintf(out, "%s %lu.%02lu/%lu.%02lums",
+          tag, lo / 100u, lo % 100u, hi / 100u, hi % 100u);
+}
 /* USER CODE END 0 */
 
 /**
@@ -156,8 +169,14 @@ int main(void)
       ssd1306_SetCursor(2, 28);
       ssd1306_WriteString(buf, Font_6x8, White);
 
-      sprintf(buf, "REJ:%lu", can_bxcan_rejected());
+      vids_timing_t tm = vids_pipeline_timing();
+
+      ui_timing_line(buf, "FEAT", &tm.feature);
       ssd1306_SetCursor(2, 40);
+      ssd1306_WriteString(buf, Font_6x8, White);
+
+      ui_timing_line(buf, "DET ", &tm.detect);
+      ssd1306_SetCursor(2, 52);
       ssd1306_WriteString(buf, Font_6x8, White);
 
       ssd1306_UpdateScreen();
