@@ -9,6 +9,9 @@ static vids_stats_t s_stats;
 static float s_feature_buf[VIDS_INPUT_DIM];
 static uint32_t s_run;
 
+static vids_timing_t s_timing;
+static uint32_t s_feature_acc;
+
 void vids_pipeline_init(can_rb_t *rb)
 {
     s_rb = rb;
@@ -19,6 +22,10 @@ void vids_pipeline_init(can_rb_t *rb)
     s_stats.attacks_detected  = 0;
     s_stats.frames_dropped    = 0;
     s_run = 0;
+
+    vids_timing_stat_reset(&s_timing.feature);
+    vids_timing_stat_reset(&s_timing.detect);
+    s_feature_acc = 0;
 }
 
 uint32_t vids_pipeline_poll(void)
@@ -30,8 +37,19 @@ uint32_t vids_pipeline_poll(void)
         handled++;
         s_stats.frames_consumed++;
 
-        if (feature_extract_push(&frame, s_feature_buf) == 1) {
+        uint32_t t0 = vids_timing_now();
+        int complete = feature_extract_push(&frame, s_feature_buf);
+        uint32_t t1 = vids_timing_now();
+        s_feature_acc += t1 - t0;
+
+        if (complete == 1) {
             vids_result_t raw = vids_detect(s_feature_buf);
+            uint32_t t2 = vids_timing_now();
+
+            vids_timing_stat_record(&s_timing.detect, t2 - t1);
+            vids_timing_stat_record(&s_timing.feature, s_feature_acc);
+            s_feature_acc = 0;
+
             s_stats.windows_processed++;
 
             if (raw == VIDS_ATTACK) {
@@ -53,6 +71,11 @@ uint32_t vids_pipeline_poll(void)
         }
     }
     return handled;
+}
+
+vids_timing_t vids_pipeline_timing(void)
+{
+    return s_timing;
 }
 
 vids_stats_t vids_pipeline_stats(void)

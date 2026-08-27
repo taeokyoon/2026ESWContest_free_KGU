@@ -1,4 +1,5 @@
 #include "can_bxcan.h"
+#include "vids_timing.h"
 #include "stm32f1xx_hal.h"
 
 #define CAN_BXCAN_CYC_PER_US 72u
@@ -21,6 +22,11 @@ static void dwt_cyccnt_init(void)
     s_cyc_last = 0u;
     s_cyc_rem  = 0u;
     s_us_total = 0u;
+}
+
+uint32_t vids_timing_now(void)
+{
+    return DWT->CYCCNT;
 }
 
 static uint64_t time_advance_locked(void)
