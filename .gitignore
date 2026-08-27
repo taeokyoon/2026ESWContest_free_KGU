@@ -6,6 +6,11 @@ ai/data/*
 ai/models/*
 !ai/models/.gitkeep
 .ipynb_checkpoints/
+firmware/test/vectors.bin
+firmware/test/test_pipeline
+firmware/test/test_quant_parity
+__pycache__/
+*.pyc
 
 # STM32CubeIDE 빌드 산출물
 firmware/**/Debug/
