@@ -26,6 +26,7 @@ cc -std=c11 -O2 -Wall -Wextra \
    -I"$FW/Core/Inc" -I"$AI_EXPORT" \
    "$HERE/test_pipeline.c" \
    "$FW/Core/Src/vids_pipeline.c" \
+   "$FW/Core/Src/vids_timing.c" \
    "$AI_EXPORT/feature_extract.c" \
    "$AI_EXPORT/inference.c" \
    -lm -o "$HERE/test_pipeline"
