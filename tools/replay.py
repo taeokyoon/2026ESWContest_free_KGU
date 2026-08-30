@@ -1,40 +1,180 @@
 """Car Hacking Challenge 데이터셋을 CAN 버스에 재생한다.
 
-사용 예:
+인자 없이 실행하면 보드 실측 테스트를 처음부터 끝까지 안내한다.
+데이터셋 파일과 포트를 찾고, 재생 속도를 원본에서 계산하고,
+정상 재생과 공격 재생을 순서대로 진행한다.
+
+    python replay.py
+
+파일을 지정하면 그 파일만 재생한다.
+
     python replay.py Pre_train_D_0.csv --port COM7
-    python replay.py Pre_train_D_0.csv --port COM7 --limit 50000 --rate 2700
+    python replay.py Pre_train_D_1.csv --port COM7 --skip 100000 --limit 50000
 """
 
 import argparse
 import csv
 import sys
 import time
+from pathlib import Path
 
 import can
+
+WINDOW_SIZE = 32
+NORMAL_FRAMES = 20000
+ATTACK_FRAMES = 50000
+SEGMENT = 50000
+FALLBACK_RATE = 2400.0
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="CAN 데이터셋 재생기")
-    p.add_argument("csv_path", help="데이터셋 CSV 경로")
-    p.add_argument("--port", default="COM7", help="USB-CAN 어댑터 포트 (기본 COM7)")
+    p.add_argument("csv_path", nargs="?", help="데이터셋 CSV 경로 (생략하면 안내 모드)")
+    p.add_argument("--port", help="USB-CAN 어댑터 포트 (생략하면 자동 탐색)")
     p.add_argument("--bitrate", type=int, default=500000, help="CAN 비트레이트 (기본 500000)")
     p.add_argument("--baudrate", type=int, default=2000000, help="어댑터 시리얼 속도 (기본 2000000)")
-    p.add_argument("--limit", type=int, default=20000, help="보낼 프레임 수 (0=전부, 기본 20000)")
-    p.add_argument("--rate", type=float, default=0.0, help="초당 프레임 수 제한 (0=제한 없음)")
+    p.add_argument("--limit", type=int, default=NORMAL_FRAMES, help="보낼 프레임 수 (0=전부)")
+    p.add_argument("--rate", type=float, help="초당 프레임 수 (생략하면 원본에서 계산, 0=제한 없음)")
     p.add_argument("--skip", type=int, default=0, help="앞에서 건너뛸 프레임 수")
     return p.parse_args()
 
 
-def available_ports():
+IGNORED_PORTS = ("bluetooth", "debug-console", "wlan-debug")
+
+
+def serial_ports():
     try:
         from serial.tools import list_ports
     except ImportError:
-        return "pyserial이 없습니다. pip install pyserial"
-
+        return None
     ports = list(list_ports.comports())
+    usable = [p for p in ports if not is_ignored(p)]
+    return usable or ports
+
+
+def is_ignored(port):
+    text = f"{port.device} {port.description or ''}".lower()
+    return any(word in text for word in IGNORED_PORTS)
+
+
+def pick_port(explicit):
+    if explicit:
+        return explicit
+
+    ports = serial_ports()
+    if ports is None:
+        print("pyserial이 없습니다.  pip install pyserial", file=sys.stderr)
+        return None
     if not ports:
-        return "연결된 시리얼 포트가 없습니다. 어댑터가 꽂혀 있는지 확인하세요."
-    return "사용 가능한 포트:\n" + "\n".join(f"  {p.device}  {p.description}" for p in ports)
+        print("연결된 시리얼 포트가 없습니다. 어댑터가 꽂혀 있는지 확인하세요.", file=sys.stderr)
+        return None
+    if len(ports) == 1:
+        print(f"포트 자동 선택: {ports[0].device}  ({ports[0].description})")
+        return ports[0].device
+
+    print("\n포트가 여러 개입니다. 어댑터가 꽂힌 포트를 고르세요.")
+    for i, p in enumerate(ports, 1):
+        print(f"  {i}) {p.device}  {p.description}")
+    while True:
+        try:
+            answer = input("번호 입력: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(ports):
+            return ports[int(answer) - 1].device
+        print("목록에 있는 번호를 입력하세요.")
+
+
+def find_csv_files():
+    roots = [Path(__file__).resolve().parent, Path.cwd()]
+    found = {}
+    for root in roots:
+        try:
+            for path in root.rglob("*.csv"):
+                resolved = path.resolve()
+                if resolved not in found and resolved.is_file():
+                    found[resolved] = resolved.stat().st_size
+        except OSError:
+            continue
+    return sorted(found, key=lambda p: found[p])
+
+
+def scan_csv(path):
+    total = 0
+    attacks = 0
+    first_ts = None
+    last_ts = None
+    segments = {}
+
+    with open(path, newline="") as f:
+        reader = csv.reader(f)
+        try:
+            header = next(reader)
+        except StopIteration:
+            return None
+        index = {name: i for i, name in enumerate(header)}
+        ts_i = index.get("Timestamp")
+        class_i = index.get("Class")
+        if ts_i is None or "Arbitration_ID" not in index:
+            return None
+
+        for row in reader:
+            if not row:
+                continue
+            total += 1
+            try:
+                stamp = float(row[ts_i])
+            except (ValueError, IndexError):
+                stamp = None
+            if stamp is not None:
+                if first_ts is None:
+                    first_ts = stamp
+                last_ts = stamp
+            if class_i is not None and row[class_i] != "Normal":
+                attacks += 1
+                start = ((total - 1) // SEGMENT) * SEGMENT
+                segments[start] = segments.get(start, 0) + 1
+
+    if total == 0:
+        return None
+
+    fps = None
+    if first_ts is not None and last_ts is not None and last_ts > first_ts:
+        fps = total / (last_ts - first_ts)
+
+    densest = max(segments, key=segments.get) if segments else 0
+    return {
+        "path": path,
+        "total": total,
+        "attacks": attacks,
+        "fps": fps,
+        "skip": densest,
+        "dense": segments.get(densest, 0),
+    }
+
+
+def choose_files():
+    paths = find_csv_files()
+    if not paths:
+        return None, None
+
+    print("데이터셋을 찾는 중입니다. 파일이 크면 잠시 걸립니다.")
+    normal = None
+    attack = None
+    for path in paths:
+        info = scan_csv(path)
+        if info is None:
+            continue
+        label = "정상만" if info["attacks"] == 0 else f"공격 {info['attacks']:,}행"
+        print(f"  {path.name:<34} {info['total']:>9,}행  {label}")
+        if info["attacks"] == 0:
+            if normal is None:
+                normal = info
+        elif attack is None:
+            attack = info
+        if normal is not None and attack is not None:
+            break
+    return normal, attack
 
 
 def load_frames(path, skip, limit):
@@ -58,34 +198,30 @@ def load_frames(path, skip, limit):
     return frames
 
 
-def main():
-    args = parse_args()
-
-    print(f"CSV 읽는 중: {args.csv_path}")
-    frames = load_frames(args.csv_path, args.skip, args.limit)
-    if not frames:
-        print("보낼 프레임이 없습니다.", file=sys.stderr)
-        return 1
-
-    ids = {m.arbitration_id for m in frames}
-    print(f"프레임 {len(frames):,}개 / 고유 ID {len(ids)}종류 / 윈도우 약 {len(frames)//32:,}개")
-
+def open_bus(port, baudrate, bitrate):
     try:
-        bus = can.interface.Bus(
+        return can.interface.Bus(
             interface="seeedstudio",
-            channel=args.port,
-            baudrate=args.baudrate,
-            bitrate=args.bitrate,
+            channel=port,
+            baudrate=baudrate,
+            bitrate=bitrate,
         )
     except Exception as e:
-        print(f"\n{args.port} 를 열지 못했습니다: {e}", file=sys.stderr)
-        print(available_ports(), file=sys.stderr)
-        return 1
+        print(f"\n{port} 를 열지 못했습니다: {e}", file=sys.stderr)
+        ports = serial_ports()
+        if ports:
+            print("사용 가능한 포트:", file=sys.stderr)
+            for p in ports:
+                print(f"  {p.device}  {p.description}", file=sys.stderr)
+        elif ports is None:
+            print("pyserial이 없습니다.  pip install pyserial", file=sys.stderr)
+        else:
+            print("연결된 시리얼 포트가 없습니다.", file=sys.stderr)
+        return None
 
-    print(f"{args.port} 열림. 2초 후 시작합니다...")
-    time.sleep(2)
 
-    interval = 1.0 / args.rate if args.rate > 0 else 0.0
+def send_frames(bus, frames, rate):
+    interval = 1.0 / rate if rate and rate > 0 else 0.0
     sent = 0
     started = time.perf_counter()
     next_due = started
@@ -103,17 +239,160 @@ def main():
 
             if sent % 2000 == 0:
                 elapsed = time.perf_counter() - started
-                print(f"  {sent:,} / {len(frames):,}  ({sent/elapsed:,.0f} fps)")
+                print(f"  {sent:,} / {len(frames):,}  ({sent / elapsed:,.0f} fps)")
     except KeyboardInterrupt:
         print("\n중단됨")
-    finally:
-        elapsed = time.perf_counter() - started
-        bus.shutdown()
 
-    print(f"\n완료: {sent:,}개 전송, {elapsed:.1f}초, 평균 {sent/elapsed:,.0f} fps")
-    if args.rate > 0 and sent / elapsed < args.rate * 0.9:
-        print("⚠️ 목표 속도에 못 미쳤습니다. PC나 어댑터가 병목입니다.")
+    elapsed = time.perf_counter() - started
+    if sent == 0 or elapsed <= 0:
+        print("\n전송된 프레임이 없습니다.")
+        return sent
+
+    achieved = sent / elapsed
+    print(f"\n완료: {sent:,}개 전송, {elapsed:.1f}초, 평균 {achieved:,.0f} fps")
+    if rate and rate > 0 and achieved < rate * 0.9:
+        print("[주의] 목표 속도에 못 미쳤습니다. PC나 어댑터가 병목입니다.")
+    return sent
+
+
+def describe(info, skip, limit):
+    count = info["total"] - skip
+    if limit:
+        count = min(count, limit)
+    seconds = count / info["fps"] if info["fps"] else 0
+    print(f"  파일     {info['path'].name}")
+    print(f"  구간     {skip:,}행부터 {count:,}프레임 (윈도우 약 {count // WINDOW_SIZE:,}개)")
+    if seconds:
+        print(f"  예상시간 약 {seconds:.0f}초")
+    return count
+
+
+def run_phase(bus, info, skip, limit, rate):
+    frames = load_frames(info["path"], skip, limit)
+    if not frames:
+        print("보낼 프레임이 없습니다.", file=sys.stderr)
+        return 0
+    ids = {m.arbitration_id for m in frames}
+    print(f"  고유 ID {len(ids)}종류 / 재생 속도 {rate:,.0f} fps")
+    print("  2초 후 시작합니다...")
+    time.sleep(2)
+    return send_frames(bus, frames, rate)
+
+
+def wait_for_user(message):
+    print(f"\n{message}")
+    try:
+        input("준비되면 Enter를 누르세요... ")
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return True
+
+
+def run_single(args):
+    path = Path(args.csv_path)
+    if not path.exists():
+        print(f"{path} 를 찾을 수 없습니다.", file=sys.stderr)
+        return 1
+
+    port = pick_port(args.port)
+    if port is None:
+        return 1
+    bus = open_bus(port, args.baudrate, args.bitrate)
+    if bus is None:
+        return 1
+
+    print(f"CSV 읽는 중: {path}")
+    rate = args.rate
+    if rate is None:
+        info = scan_csv(path)
+        rate = info["fps"] if info and info["fps"] else FALLBACK_RATE
+        print(f"재생 속도를 원본에서 계산했습니다: {rate:,.0f} fps")
+
+    frames = load_frames(path, args.skip, args.limit)
+    if not frames:
+        print("보낼 프레임이 없습니다.", file=sys.stderr)
+        bus.shutdown()
+        return 1
+
+    ids = {m.arbitration_id for m in frames}
+    print(f"프레임 {len(frames):,}개 / 고유 ID {len(ids)}종류 / 윈도우 약 {len(frames) // WINDOW_SIZE:,}개")
+    print(f"{port} 열림. 2초 후 시작합니다...")
+    time.sleep(2)
+    try:
+        send_frames(bus, frames, rate)
+    finally:
+        bus.shutdown()
     return 0
+
+
+def run_guided(args):
+    print("=" * 58)
+    print(" V-IDS 보드 실측 테스트")
+    print("=" * 58)
+    print("\n보드가 켜져 있고 OLED에 V-IDS 화면이 떠 있어야 합니다.")
+    print("아직이면 CubeIDE에서 Run(Ctrl+F11)으로 구운 뒤 다시 실행하세요.\n")
+
+    normal, attack = choose_files()
+    if normal is None:
+        print("\n정상 데이터 CSV를 찾지 못했습니다.", file=sys.stderr)
+        print("데이터셋을 이 스크립트와 같은 폴더에 두고 다시 실행하세요.", file=sys.stderr)
+        return 1
+
+    port = pick_port(args.port)
+    if port is None:
+        return 1
+    bus = open_bus(port, args.baudrate, args.bitrate)
+    if bus is None:
+        return 1
+
+    try:
+        rate = normal["fps"] or FALLBACK_RATE
+        print("\n" + "-" * 58)
+        print(" [1/2] 정상 데이터 재생")
+        print("-" * 58)
+        describe(normal, 0, NORMAL_FRAMES)
+        run_phase(bus, normal, 0, NORMAL_FRAMES, rate)
+
+        print("\n  OLED 확인:")
+        print("    FEAT / DET 두 줄에 숫자가 찍혀 있으면 성공입니다.")
+        print("    ATK는 0이 정상입니다. 정상 데이터만 보냈습니다.")
+        print("    W 는 RX 를 32로 나눈 값, RX + DRP 는 보낸 수와 비슷해야 합니다.")
+
+        if attack is None:
+            print("\n공격 데이터 CSV가 없어 1단계까지만 진행했습니다.")
+            print("사진을 찍어서 보내주세요.")
+            return 0
+
+        if not wait_for_user(
+            "사진을 찍은 뒤 보드의 리셋 버튼을 눌러주세요.\n"
+            "리셋하지 않으면 측정값이 1단계와 섞입니다."
+        ):
+            return 1
+
+        rate = attack["fps"] or rate
+        print("\n" + "-" * 58)
+        print(" [2/2] 공격 데이터 재생")
+        print("-" * 58)
+        skip = attack["skip"]
+        print(f"  공격이 가장 몰린 구간을 찾았습니다 (해당 구간 공격 {attack['dense']:,}행)")
+        describe(attack, skip, ATTACK_FRAMES)
+        run_phase(bus, attack, skip, ATTACK_FRAMES, rate)
+
+        print("\n  OLED 확인:")
+        print("    이번에는 ATK가 0보다 커야 합니다.")
+        print("    ATK는 경보가 켜져 있던 윈도우 수라 수백까지 올라갈 수 있습니다.")
+        print("    FEAT의 min 값이 1단계보다 작아질 수 있는데 정상입니다.")
+        print("\n사진을 찍어서 보내주세요. 두 장이면 끝입니다.")
+    finally:
+        bus.shutdown()
+    return 0
+
+
+def main():
+    args = parse_args()
+    if args.csv_path:
+        return run_single(args)
+    return run_guided(args)
 
 
 if __name__ == "__main__":

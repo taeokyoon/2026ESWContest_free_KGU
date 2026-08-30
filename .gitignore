@@ -27,3 +27,6 @@ RemoteSystemsTempFiles/
 
 # macOS
 .DS_Store
+
+# 데이터셋 CSV (레포 밖 관리, tools/에 내려받아도 커밋 안 되게)
+*.csv
