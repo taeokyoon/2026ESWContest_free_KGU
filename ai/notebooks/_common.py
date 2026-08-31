@@ -30,6 +30,14 @@ ID_DELTA_T_LOG_MAX = 11.873697951933963
 
 LAYER_DIMS = {0: (354, 64), 1: (64, 16), 2: (16, 64), 3: (64, 354)}
 
+WINDOW_DIM = WINDOW * FEATURES_PER_FRAME
+ID_DIMS = list(range(0, WINDOW_DIM, FEATURES_PER_FRAME))
+
+K_CONSECUTIVE = 2      # k회 연속 양성일 때만 경보
+PCT_A = 99.9           # 점수 A 임계 (val normal 백분위)
+PCT_UNIQUE = 0.1       # unique_id_ratio 하위 백분위 (낮으면 이상)
+PCT_REPEAT = 99.9      # max_repeat_ratio 상위 백분위 (높으면 이상)
+
 TRAIN_FILES = [f"Pre_train_{s}_{i}.csv" for s in ("D", "S") for i in range(3)]
 HELDOUT_FILES = ["Pre_submit_D.csv", "Pre_submit_S.csv", "Fin_host_session_submit_S.csv"]
 

@@ -104,8 +104,9 @@ vids_result_t vids_detect(const float input[VIDS_INPUT_DIM])
     dense_acc(h1, L2_IN, L2_OUT, layer2_weight_q, vids_bias_q2, acc, L2_OUT);
     activate(acc, L2_OUT, VIDS_REQUANT2_M0, VIDS_REQUANT2_SH, h2);
 
-    /* 출력층은 복원값을 저장하지 않고 청크 단위로 흘려보내며 오차만 누적한다. */
-    int64_t err_full = 0;
+    /* 출력층은 복원값을 저장하지 않고 청크 단위로 흘려보내며 오차만 누적한다.
+       누적 대상은 프레임별 id_norm 이 놓인 32칸뿐이다. */
+    int64_t err_id = 0;
     for (int base = 0; base < L3_OUT; base += ACC_CHUNK) {
         int n = L3_OUT - base;
         if (n > ACC_CHUNK) {
@@ -114,12 +115,16 @@ vids_result_t vids_detect(const float input[VIDS_INPUT_DIM])
         dense_acc(h2, L3_IN, L3_OUT, layer3_weight_q + base,
                   vids_bias_q3 + base, acc, n);
         for (int j = 0; j < n; j++) {
-            int32_t d = (int32_t)s_in_q[base + j] - (int32_t)sigmoid_q(acc[j]);
-            err_full += (int64_t)d * (int64_t)d;
+            int idx = base + j;
+            if (idx >= VIDS_WINDOW_DIM || (idx % VIDS_FRAME_FEATURES) != 0) {
+                continue;
+            }
+            int32_t d = (int32_t)s_in_q[idx] - (int32_t)sigmoid_q(acc[j]);
+            err_id += (int64_t)d * (int64_t)d;
         }
     }
 
-    if (err_full > VIDS_TH_FULL_Q) {
+    if (err_id > VIDS_TH_ID_Q) {
         return VIDS_ATTACK;
     }
     if (s_in_q[VIDS_INPUT_DIM - 2] < VIDS_TH_UNIQUE_Q) {

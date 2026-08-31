@@ -34,12 +34,12 @@ def main():
     model = Q.IntModel(Wq, b, ws, C.LAYER_DIMS)
     model.calibrate(X_train)
 
-    sa_val, _ = Q.int_scores(X_val, model.forward(X_val))
-    TA = float(np.percentile(sa_val, 95.0))
-    RU = float(np.percentile(X_val[:, 352], 0.1))
-    RM = float(np.percentile(X_val[:, 353], 99.9))
+    sa_val = Q.int_score_dims(X_val, model.forward(X_val), C.ID_DIMS)
+    TA = float(np.percentile(sa_val, C.PCT_A))
+    RU = float(np.percentile(X_val[:, 352], C.PCT_UNIQUE))
+    RM = float(np.percentile(X_val[:, 353], C.PCT_REPEAT))
 
-    score, _ = Q.int_scores(X, model.forward(X))
+    score = Q.int_score_dims(X, model.forward(X), C.ID_DIMS)
     rule = (X[:, 352] < RU) | (X[:, 353] > RM)
     verdict = (score > TA) | rule
 
@@ -67,7 +67,7 @@ def main():
     print(f"테스트 벡터 {len(idx):,}개 생성")
     print(f"  공격 판정 {int(vs.sum()):,} / 정상 판정 {int((~vs.astype(bool)).sum()):,}")
     print(f"  임계값 0.01% 이내 경계 표본 {near:,}개")
-    print(f"  임계값 A {TA:,.0f}   규칙 unique<{RU:.6f} repeat>{RM:.6f}")
+    print(f"  임계값 A(id 32칸) {TA:,.0f}   규칙 unique<{RU:.6f} repeat>{RM:.6f}")
     print(f"  -> {out_path}  ({out_path.stat().st_size:,} B)")
     return 0
 

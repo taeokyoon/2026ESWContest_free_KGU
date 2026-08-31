@@ -21,7 +21,7 @@ from sklearn.model_selection import train_test_split
 import _common as C
 import _intquant as Q
 
-K = 5
+K = C.K_CONSECUTIVE
 ID_COLS = list(range(0, C.WINDOW * C.FEATURES_PER_FRAME, C.FEATURES_PER_FRAME))
 AGG_COLS = [352, 353]
 
@@ -57,10 +57,12 @@ def main():
     W, b, ws, Wq = C.load_quantized_weights()
     m = Q.IntModel(Wq, b, ws, C.LAYER_DIMS)
     m.calibrate(X_calib)
-    sa, sb = Q.int_scores(X_val, m.forward(X_val))
-    TA, TB = float(np.percentile(sa, 95)), float(np.percentile(sb, 99.9))
+    sa = Q.int_score_dims(X_val, m.forward(X_val), C.ID_DIMS)
+    TA = float(np.percentile(sa, C.PCT_A))
+    RU = float(np.percentile(X_val[:, 352], C.PCT_UNIQUE))
+    RM = float(np.percentile(X_val[:, 353], C.PCT_REPEAT))
     agg_median = np.median(X_calib[:, AGG_COLS], axis=0)
-    print(f"  임계값 A {TA:,.0f}  B {TB:,.0f}")
+    print(f"  임계값 A(id 32칸) {TA:,.0f}   규칙 unique<{RU:.6f} repeat>{RM:.6f}")
     print(f"  집계특성 중립값 unique_id_ratio {agg_median[0]:.4f}  max_repeat_ratio {agg_median[1]:.4f}")
 
     rng = np.random.default_rng(42)
@@ -76,8 +78,9 @@ def main():
 
         base = None
         for name, Xv in variants(X, rng, agg_median):
-            SA, SB = Q.int_scores(Xv, m.forward(Xv))
-            fire = C.apply_k_consecutive((SA > TA) | (SB > TB), K)
+            SA = Q.int_score_dims(Xv, m.forward(Xv), C.ID_DIMS)
+            rule = (Xv[:, 352] < RU) | (Xv[:, 353] > RM)
+            fire = C.apply_k_consecutive((SA > TA) | rule, K)
             det, fpr = C.window_metrics(fire, y, sub)
             row = "  ".join(
                 f"{det[t] * 100:7.2f}%" if t in det else "      — " for t in C.ATTACK_TYPES

@@ -172,6 +172,13 @@ def int_scores(X, out_q):
     return (d * d).sum(1), (d[:, -2:] * d[:, -2:]).sum(1)
 
 
+def int_score_dims(X, out_q, dims):
+    """지정한 차원들만의 재구성오차 제곱합. 354차원 전체 합은 신호를 희석시킨다."""
+    in_q = np.clip(np.floor(X.astype(np.float64) / IO_SCALE + 0.5), 0, ACT_MAX).astype(np.int64)
+    d = (in_q - out_q.astype(np.int64))[:, dims]
+    return (d * d).sum(1)
+
+
 def threshold_to_int(mse_threshold, n_dims):
     """실수 MSE 임계값 -> 정수 제곱합 임계값."""
     return int(np.floor(mse_threshold * n_dims / (IO_SCALE ** 2)))

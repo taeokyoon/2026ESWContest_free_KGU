@@ -20,16 +20,16 @@ from sklearn.model_selection import train_test_split
 import _common as C
 import _intquant as Q
 
-K_CONSECUTIVE = 5      # k회 연속 양성일 때만 경보
-PCT_A = 95.0           # 점수 A 임계 (val normal 백분위)
-PCT_UNIQUE = 0.1       # unique_id_ratio 하위 백분위 (낮으면 이상)
-PCT_REPEAT = 99.9      # max_repeat_ratio 상위 백분위 (높으면 이상)
+K_CONSECUTIVE = C.K_CONSECUTIVE
+PCT_A = C.PCT_A
+PCT_UNIQUE = C.PCT_UNIQUE
+PCT_REPEAT = C.PCT_REPEAT
 
 LEGACY_TH_FULL = 0.07299177638757141
 LEGACY_TH_LAST2 = 0.01824626258918472
 
 
-def emit_header(path, model, th_full_q, uniq_q, rep_q, meta):
+def emit_header(path, model, th_id_q, uniq_q, rep_q, meta):
     d = model.act_scale
     L = [
         "#ifndef AUTOENCODER_V5_QUANT_H",
@@ -74,8 +74,11 @@ def emit_header(path, model, th_full_q, uniq_q, rep_q, meta):
     L += [
         f"static const int16_t vids_sigmoid_lut[{Q.SIG_LUT_N}] = {{{v}}};",
         "",
-        "/* 판정 1 — 점수 A: 354차원 재구성오차 제곱합 (나눗셈 없이 직접 비교) */",
-        f"#define VIDS_TH_FULL_Q     {th_full_q}LL",
+        "/* 판정 1 — 점수 A: 프레임별 id_norm 32칸의 재구성오차 제곱합.",
+        "   354차원을 전부 합치면 32칸의 신호가 희석돼 Flooding 을 놓친다. */",
+        f"#define VIDS_WINDOW_DIM    {C.WINDOW_DIM}",
+        f"#define VIDS_FRAME_FEATURES {C.FEATURES_PER_FRAME}",
+        f"#define VIDS_TH_ID_Q       {th_id_q}LL",
         "",
         "/* 판정 2 — 규칙: 윈도우 집계 특성 2개를 int16 도메인에서 직접 비교 */",
         f"#define VIDS_TH_UNIQUE_Q   {uniq_q}   /* unique_id_ratio 가 이 값 미만이면 이상 */",
@@ -126,12 +129,14 @@ def main():
               f"{'OK' if a < lim else 'OVERFLOW'}")
 
     print("\n=== float32 대비 정수화 판정 일치 ===")
-    fa_v, _ = C.scores(X_val, C.forward_float(X_val, W, b))
-    sa_v, _ = Q.int_scores(X_val, out_val)
+    f_out_v = C.forward_float(X_val, W, b)
+    fa_v = ((X_val.astype(np.float32) - f_out_v)[:, C.ID_DIMS] ** 2).sum(1)
+    sa_v = Q.int_score_dims(X_val, out_val, C.ID_DIMS)
     TA = float(np.percentile(sa_v, PCT_A))
     TAf = float(np.percentile(fa_v, PCT_A))
-    fa_all, _ = C.scores(X, C.forward_float(X, W, b))
-    sa_all, _ = Q.int_scores(X, out_all)
+    f_out_all = C.forward_float(X, W, b)
+    fa_all = ((X.astype(np.float32) - f_out_all)[:, C.ID_DIMS] ** 2).sum(1)
+    sa_all = Q.int_score_dims(X, out_all, C.ID_DIMS)
     n_diff = int(((sa_all > TA) != (fa_all > TAf)).sum())
     print(f"  점수 A 판정 불일치 {n_diff:,} / {len(X):,} ({n_diff / len(X) * 100:.4f}%)")
 
@@ -139,7 +144,8 @@ def main():
     RM = float(np.percentile(X_val[:, 353], PCT_REPEAT))
     rule_all = (X[:, 352] < RU) | (X[:, 353] > RM)
     print(f"\n=== 확정 임계값 (val normal 기준) ===")
-    print(f"  점수 A  제곱합 > {TA:,.0f}   (MSE 환산 {TA * Q.IO_SCALE ** 2 / C.INPUT_DIM:.17g})")
+    print(f"  점수 A  id 32칸 제곱합 > {TA:,.0f}"
+          f"   (MSE 환산 {TA * Q.IO_SCALE ** 2 / len(C.ID_DIMS):.17g})")
     print(f"  규칙    unique_id_ratio < {RU:.6f}  또는  max_repeat_ratio > {RM:.6f}")
 
     print(f"\n=== k 스윕 (학습 세션, 하이브리드) ===")
@@ -152,19 +158,19 @@ def main():
         print(f"  {k:>2d} {fpr * 100:7.3f}% {fpr * 84.4 * 3600:9.1f}회  " +
               "  ".join(f"{det[t] * 100:7.2f}%" for t in C.ATTACK_TYPES) + mark)
 
-    th_full_q = int(np.floor(TA))
+    th_id_q = int(np.floor(TA))
     uniq_q = int(np.floor(RU / Q.IO_SCALE))
     rep_q = int(np.ceil(RM / Q.IO_SCALE))
-    meta = f"k={K_CONSECUTIVE}, 점수A {PCT_A}%ile, 규칙 {PCT_UNIQUE}/{PCT_REPEAT}%ile"
+    meta = f"k={K_CONSECUTIVE}, 점수A(id 32칸) {PCT_A}%ile, 규칙 {PCT_UNIQUE}/{PCT_REPEAT}%ile"
 
     out = C.EXPORT / "autoencoder_v5_quant.h"
-    emit_header(out, model, th_full_q, uniq_q, rep_q, meta)
+    emit_header(out, model, th_id_q, uniq_q, rep_q, meta)
     print(f"\n=== 헤더 생성 ===")
-    print(f"  TH_FULL_Q {th_full_q:,}  TH_UNIQUE_Q {uniq_q:,}  TH_REPEAT_Q {rep_q:,}  K {K_CONSECUTIVE}")
+    print(f"  TH_ID_Q {th_id_q:,}  TH_UNIQUE_Q {uniq_q:,}  TH_REPEAT_Q {rep_q:,}  K {K_CONSECUTIVE}")
     print(f"  -> {out}  ({out.stat().st_size:,} B)")
 
     np.savez(C.CACHE / "quant_state.npz", act_scale=np.array(model.act_scale, dtype=object),
-             th_full_q=th_full_q, uniq_q=uniq_q, rep_q=rep_q, k=K_CONSECUTIVE)
+             th_id_q=th_id_q, uniq_q=uniq_q, rep_q=rep_q, k=K_CONSECUTIVE)
     return 0
 
 

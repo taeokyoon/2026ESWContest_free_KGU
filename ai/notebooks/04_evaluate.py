@@ -11,6 +11,7 @@
 "전부 공격"이라 답하는 분류기조차 F1 0.68이 나온다.
 
 임계값은 **학습 세션의 val normal**로만 잡고, 평가셋에는 그대로 적용한다.
+판정은 firmware 와 동일한 `점수 A OR 규칙`이며, 상수는 `_common.py` 한 곳에서 온다.
 """
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -45,14 +46,15 @@ def main():
     model = Q.IntModel(Wq, b, w_scales, C.LAYER_DIMS)
     model.calibrate(X_train)
 
-    sa, sb = Q.int_scores(X_val, model.forward(X_val))
-    TA = float(np.percentile(sa, 95))
-    TB = float(np.percentile(sb, 99.9))
-    print(f"  정수 임계값  A {TA:,.0f}   B {TB:,.0f}")
+    sa = Q.int_score_dims(X_val, model.forward(X_val), C.ID_DIMS)
+    TA = float(np.percentile(sa, C.PCT_A))
+    RU = float(np.percentile(X_val[:, 352], C.PCT_UNIQUE))
+    RM = float(np.percentile(X_val[:, 353], C.PCT_REPEAT))
+    print(f"  정수 임계값  A(id 32칸) {TA:,.0f}")
+    print(f"  규칙  unique_id_ratio < {RU:.6f}  또는  max_repeat_ratio > {RM:.6f}")
 
-    fa, fb = C.scores(X_val, C.forward_float(X_val, W, b))
-    TAf = float(np.percentile(fa, 95))
-    TBf = float(np.percentile(fb, 99.9))
+    fa = ((X_val.astype(np.float32) - C.forward_float(X_val, W, b))[:, C.ID_DIMS] ** 2).sum(1)
+    TAf = float(np.percentile(fa, C.PCT_A))
 
     for title, files, cache in DATASETS:
         print("\n" + "=" * 78)
@@ -67,12 +69,11 @@ def main():
         print("  주입 밀도(공격 윈도우 32프레임 중 공격 프레임 비율):",
               "  ".join(f"{t[:4]} {dens[t] * 100:.1f}%" for t in C.ATTACK_TYPES if t in dens))
 
-        out_q = model.forward(X)
-        SA, SB = Q.int_scores(X, out_q)
-        raw_q = (SA > TA) | (SB > TB)
-        out_f = C.forward_float(X, W, b)
-        FA, FB = C.scores(X, out_f)
-        raw_f = (FA > TAf) | (FB > TBf)
+        rule = (X[:, 352] < RU) | (X[:, 353] > RM)
+        SA = Q.int_score_dims(X, model.forward(X), C.ID_DIMS)
+        raw_q = (SA > TA) | rule
+        FA = ((X.astype(np.float32) - C.forward_float(X, W, b))[:, C.ID_DIMS] ** 2).sum(1)
+        raw_f = (FA > TAf) | rule
 
         print(f"\n  [정수화 영향] 윈도우 판정 불일치 "
               f"{int((raw_q != raw_f).sum()):,} / {len(X):,} "
@@ -85,12 +86,14 @@ def main():
               f" | {'--- 에피소드 단위 ---':^34s} | {'프레임 단위':^20s}")
         for k in K_VALUES:
             fire = C.apply_k_consecutive(raw_q, k)
+            mark = "  <- 채택" if k == C.K_CONSECUTIVE else ""
+
             det_w, fpr = C.window_metrics(fire, y, sub)
             det_e = C.episode_metrics(fire, sub)
             prec, rec, f1 = C.frame_metrics(fire, lab)
             print(f"  {k:>2d} {fpr * WINDOWS_PER_SEC * 3600:8.1f}회 | {fmt_det(det_w)}"
                   f" | {fmt_det(det_e, key=lambda v: v[0])}"
-                  f" | {prec:6.3f} {rec:6.3f} {f1:6.3f}")
+                  f" | {prec:6.3f} {rec:6.3f} {f1:6.3f}{mark}")
 
         eps = {t: len(C.find_episodes(sub == t)) for t in C.ATTACK_TYPES}
         print("  에피소드 개수:", "  ".join(f"{t[:4]} {eps[t]:,}" for t in C.ATTACK_TYPES if eps[t]))
