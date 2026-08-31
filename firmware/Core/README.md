@@ -174,16 +174,23 @@ ID 테이블 두 개가 10,240 B로 SRAM의 절반을 차지합니다. `ID_TABLE
 
 ### `vids_pipeline.c` — K회 연속 필터 추가
 
-윈도우 판정이 **연속 `VIDS_K_CONSECUTIVE`(현재 5)회 양성**일 때만 `vids_on_result()`에
-`VIDS_ATTACK`을 전달합니다. 오탐은 산발적이고 공격은 지속되므로, 임계값을 조이는 것보다
-효율이 훨씬 좋습니다.
+윈도우 판정이 **연속 `VIDS_K_CONSECUTIVE`(현재 2)회 양성**일 때만 `vids_on_result()`에
+`VIDS_ATTACK`을 전달합니다. K는 규칙 판정의 경계 오발동(고립된 단일 윈도우)을 지웁니다.
+
+값은 `ai/notebooks/03_quantize.py`가 생성하는 `autoencoder_v5_quant.h`에서 옵니다.
+2026-08-31에 미사용 평가셋 3종 교차검증으로 `95백분위·K=5` → `99.9백분위·K=2`로 바꿨습니다.
 
 ```
-임계값 조이기 (FPR 0.1% 목표)  ->  Flooding 99.93%, Fuzzing  9.19%
-k=5 연속 필터  (FPR 0.010%)    ->  Flooding 99.75%, Fuzzing 17.54%
+95백분위 · K=5  · 354차원 합  ->  공격 에피소드 51/78, 정상 15.2분 중 헛울림 2번
+99.9백분위 · K=2 · id 32칸 합 ->  공격 에피소드 78/78, 정상 15.2분 중 헛울림 0번
 ```
 
-탐지 지연은 `5 × 32프레임 ÷ 2,700fps ≈ 59ms`입니다.
+2026-09-01에 점수 A의 채점 범위도 바꿨습니다(354차원 전부 합 -> `id_norm` 32칸 합).
+`inference.c` 출력층 오차 루프에서 `idx % VIDS_FRAME_FEATURES == 0 && idx < VIDS_WINDOW_DIM`
+인 차원만 누적합니다. **Flash +60 B, SRAM 변화 없음, 추론 시간 변화 없음.**
+
+탐지 지연은 `2 × 32프레임 ÷ 2,672fps ≈ 24ms`입니다(평가셋 실측 속도). 근거는 `ai/README.md`의
+"k회 연속 필터와 임계값" 절에 있습니다. **추론 시간과 Flash/SRAM은 변하지 않습니다.**
 
 `vids_stats_t`에 `windows_flagged`가 추가됐습니다.
 
