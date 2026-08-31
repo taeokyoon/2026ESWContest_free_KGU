@@ -5,6 +5,10 @@ ai/data/*
 !ai/data/.gitkeep
 ai/models/*
 !ai/models/.gitkeep
+# 최종 학습 모델은 예외로 커밋한다 (약 250KB). 재학습·재양자화의 원본이므로
+# 레포 밖에만 존재하면 복구가 불가능해진다. 중간 체크포인트는 계속 제외.
+!ai/models/*.h5
+!ai/models/*.keras
 .ipynb_checkpoints/
 firmware/test/vectors.bin
 firmware/test/test_pipeline
