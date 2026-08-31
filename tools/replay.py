@@ -16,15 +16,22 @@ import argparse
 import csv
 import sys
 import time
+from array import array
 from pathlib import Path
 
 import can
 
 WINDOW_SIZE = 32
 NORMAL_FRAMES = 20000
-ATTACK_FRAMES = 50000
+ATTACK_FRAMES = 26000
 SEGMENT = 50000
+LEAD_FRAMES = 3200
 FALLBACK_RATE = 2400.0
+
+TRAIN_FILES = (
+    "pre_train_d_0.csv", "pre_train_d_1.csv", "pre_train_d_2.csv",
+    "pre_train_s_0.csv", "pre_train_s_1.csv", "pre_train_s_2.csv",
+)
 
 
 def parse_args():
@@ -99,12 +106,29 @@ def find_csv_files():
     return sorted(found, key=lambda p: found[p])
 
 
+def robust_fps(gaps):
+    """이어붙인 파일의 시간 공백·역행에 흔들리지 않는 재생 속도.
+
+    전체 구간을 프레임 수로 나누면 공백 하나에 결과가 무너지므로,
+    양수 간격만 모아 상위 1%를 잘라낸 평균을 쓴다.
+    """
+    positive = sorted(g for g in gaps if g > 0)
+    if not positive:
+        return None
+    cut = positive[: max(1, int(len(positive) * 0.99))]
+    mean = sum(cut) / len(cut)
+    return 1.0 / mean if mean > 0 else None
+
+
 def scan_csv(path):
     total = 0
     attacks = 0
-    first_ts = None
-    last_ts = None
+    gaps = array("d")
+    prev_ts = None
     segments = {}
+    transitions = []
+    normal_run = 0
+    was_attack = False
 
     with open(path, newline="") as f:
         reader = csv.reader(f)
@@ -127,29 +151,41 @@ def scan_csv(path):
             except (ValueError, IndexError):
                 stamp = None
             if stamp is not None:
-                if first_ts is None:
-                    first_ts = stamp
-                last_ts = stamp
-            if class_i is not None and row[class_i] != "Normal":
+                if prev_ts is not None:
+                    gaps.append(stamp - prev_ts)
+                prev_ts = stamp
+
+            is_attack = class_i is not None and row[class_i] != "Normal"
+            if is_attack:
                 attacks += 1
                 start = ((total - 1) // SEGMENT) * SEGMENT
                 segments[start] = segments.get(start, 0) + 1
+                if not was_attack and normal_run >= LEAD_FRAMES:
+                    transitions.append(total - 1)
+                normal_run = 0
+            else:
+                normal_run += 1
+            was_attack = is_attack
 
     if total == 0:
         return None
 
-    fps = None
-    if first_ts is not None and last_ts is not None and last_ts > first_ts:
-        fps = total / (last_ts - first_ts)
-
     densest = max(segments, key=segments.get) if segments else 0
+    skip = 0
+    if segments:
+        limit = densest + SEGMENT
+        usable = [t for t in transitions if t <= limit]
+        anchor = usable[-1] if usable else (transitions[0] if transitions else densest)
+        skip = max(0, anchor - LEAD_FRAMES)
+
     return {
         "path": path,
         "total": total,
         "attacks": attacks,
-        "fps": fps,
-        "skip": densest,
+        "fps": robust_fps(gaps),
+        "skip": skip,
         "dense": segments.get(densest, 0),
+        "training": path.name.lower() in TRAIN_FILES,
     }
 
 
@@ -166,13 +202,14 @@ def choose_files():
         if info is None:
             continue
         label = "정상만" if info["attacks"] == 0 else f"공격 {info['attacks']:,}행"
-        print(f"  {path.name:<34} {info['total']:>9,}행  {label}")
+        mark = " (학습에 쓴 파일)" if info["training"] else ""
+        print(f"  {path.name:<34} {info['total']:>9,}행  {label}{mark}")
         if info["attacks"] == 0:
             if normal is None:
                 normal = info
-        elif attack is None:
+        elif attack is None or (attack["training"] and not info["training"]):
             attack = info
-        if normal is not None and attack is not None:
+        if normal is not None and attack is not None and not attack["training"]:
             break
     return normal, attack
 
@@ -374,7 +411,11 @@ def run_guided(args):
         print(" [2/2] 공격 데이터 재생")
         print("-" * 58)
         skip = attack["skip"]
-        print(f"  공격이 가장 몰린 구간을 찾았습니다 (해당 구간 공격 {attack['dense']:,}행)")
+        print(f"  정상 {LEAD_FRAMES:,}프레임이 흐른 뒤 공격이 시작되는 지점을 골랐습니다.")
+        print(f"  → 앞부분 윈도우 {LEAD_FRAMES // WINDOW_SIZE}개는 ATK가 0으로 유지되다가 올라갑니다.")
+        if attack["training"]:
+            print("  참고: 이 파일은 학습에도 쓴 파일입니다. 시연 촬영에는")
+            print("        Pre_submit_* 같은 미사용 평가셋을 쓰는 편이 낫습니다.")
         describe(attack, skip, ATTACK_FRAMES)
         run_phase(bus, attack, skip, ATTACK_FRAMES, rate)
 
