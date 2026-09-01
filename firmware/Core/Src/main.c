@@ -111,8 +111,13 @@ int main(void)
   MX_USART2_UART_Init();
   MX_I2C1_Init();
   MX_CAN_Init();
+
+
   /* USER CODE BEGIN 2 */
   ssd1306_Init();
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+  HAL_Delay(1000);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
   ssd1306_Fill(Black);
   ssd1306_SetCursor(2, 0);
   ssd1306_WriteString("V-IDS", Font_7x10, White);
@@ -165,7 +170,7 @@ int main(void)
       ssd1306_SetCursor(2, 16);
       ssd1306_WriteString(buf, Font_6x8, White);
 
-      sprintf(buf, "ATK:%lu DRP:%lu", st.attacks_detected, st.frames_dropped);
+      sprintf(buf, "F:%lu A:%lu D:%lu", st.windows_flagged, st.attacks_detected, st.frames_dropped);
       ssd1306_SetCursor(2, 28);
       ssd1306_WriteString(buf, Font_6x8, White);
 
@@ -225,7 +230,12 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void vids_on_result(vids_result_t result, const vids_stats_t *stats)
+{
+  (void)stats;
+  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin,
+                    (result == VIDS_ATTACK) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
 /* USER CODE END 4 */
 
 /**

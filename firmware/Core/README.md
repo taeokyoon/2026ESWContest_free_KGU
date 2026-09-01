@@ -66,14 +66,39 @@ SRAM 잔여가 3,028 B이므로 **여유는 약 600 B**입니다. 링크는 통�
 `[AI-2]` 정수화 시 이 배열들이 int8/int16이 되어 스택 사용량이 1/4~1/2로 줄어듭니다.
 정수화를 서둘러야 할 두 번째 이유입니다.
 
-### 3. AutoBusOff 비활성
-
-`can.c:47`이 `AutoBusOff = DISABLE`입니다. 버스오프가 나면 리셋 전까지 수신이 영구
-정지합니다. `.ioc`에 해당 항목이 없어 CubeMX 기본값으로 생성된 상태이므로, CubeMX GUI에서
-`Connectivity > CAN > Parameter Settings > Automatic Bus-Off Management`를 Enabled로
-바꾸고 재생성해야 합니다. → 티켓 `[FW-3]`
-
 ## 해결된 항목
+
+### AutoBusOff 활성화 (해결, `[FW-3]`)
+
+CubeMX GUI에서 `Connectivity > CAN > Parameter Settings > Automatic Bus-Off Management`
+를 Enabled로 변경 후 재생성. `can.c`가 `hcan.Init.AutoBusOff = ENABLE`로 갱신되었고,
+`.ioc`에는 `CAN.ABOM=ENABLE`이 기록됩니다. 이제 버스오프 발생 시 하드웨어가 자동으로
+복구를 시도하므로 리셋 없이 수신을 재개합니다.
+
+### 공격 알림 배선 (해결, `[FW-buzzer]`)
+
+`vids_on_result()`가 이전에는 정의되지 않아 `vids_pipeline.c`의 weak 심볼(no-op)이
+링크되고 있었습니다. `main.c` `USER CODE BEGIN 4`에 실제 구현을 추가하여, 판정 결과가
+`VIDS_ATTACK`이면 PA8(BUZZER)을 HIGH, 그 외에는 LOW로 설정합니다.
+
+- PA8을 CubeMX에서 `GPIO_Output`으로 지정하고 User Label `BUZZER`를 부여했습니다
+  (`main.h`에 `BUZZER_Pin`, `BUZZER_GPIO_Port` 매크로 자동 생성). 배선 상수를 손으로
+  적지 않으므로 나중에 핀을 옮겨도 코드 수정 불필요.
+- 알림은 K회 연속 필터(`VIDS_K_CONSECUTIVE=5`)를 통과한 결과에서만 발생하므로 산발적
+  오탐으로 울릴 가능성이 줄어듭니다. 다만 **래치가 없어** 경보가 꺼지면 핀도 즉시
+  내려갑니다. 따라서 경보가 간헐적인 공격 유형에서는 윈도우 주기(약 28 ms) 단위로
+  짧게 끊겨 울립니다. Flooding처럼 지속되는 공격에서는 연속으로 울립니다.
+
+  | 공격 유형 | 공격 중 경보가 켜져 있는 비율 | 부저 |
+  |---|---|---|
+  | Flooding | 99.7% | 연속 |
+  | Fuzzing | 11.9% | 끊김 |
+  | Replay | 0.6% | 거의 단발 |
+  | Spoofing | 0.1% | 단발 |
+
+  (미사용 평가셋 3종, PC 시뮬레이션. 현재 판정 설정 기준)
+  시연에 쓰는 구간은 전부 Flooding이라 약 20초 연속으로 울립니다.
+
 
 ### 콜백 심볼 충돌 · CAN 초기화 중복 · 파이프라인 미배선 (해결, `[FW-5]`)
 
@@ -312,12 +337,13 @@ NUCLEO-F103RB(72 MHz, FPU 없음) · CubeIDE **Debug 구성(`-O0`)** · 윈도�
 ```
 V-IDS               y=0   Font_7x10
 RX:2500 W:78        y=16  받은 프레임 / 처리한 윈도우
-ATK:12 DRP:0        y=28  경보 횟수 / 유실 프레임
+F:-- A:12 D:0       y=28  윈도우 양성 / 경보(K회 연속 통과) / 유실 프레임
 FEAT  2.91/3.29ms   y=40  특징 추출  min/max
 DET  20.30/25.04ms  y=52  추론       min/max
 ```
 
-위는 2026-09-01 실제 보드 화면입니다. 윈도우가 아직 하나도 안 찼으면
+위는 2026-09-01 실제 보드 화면입니다. 단 `F`(`windows_flagged`)는 이 측정 이후에 추가된
+항목이라 당시 값이 없어 `--`로 두었습니다. 윈도우가 아직 하나도 안 찼으면
 `--.--/--.--`로 표시해 `0.00`과 구분합니다.
 
 `y=52`+8 = 60 ≤ 64로 화면에 들어가고, 폭은 `Font_6x8` 기준 21자 한계에 대해 최악
