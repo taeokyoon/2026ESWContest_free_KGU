@@ -66,14 +66,27 @@ SRAM 잔여가 3,028 B이므로 **여유는 약 600 B**입니다. 링크는 통�
 `[AI-2]` 정수화 시 이 배열들이 int8/int16이 되어 스택 사용량이 1/4~1/2로 줄어듭니다.
 정수화를 서둘러야 할 두 번째 이유입니다.
 
-### 3. AutoBusOff 비활성
-
-`can.c:47`이 `AutoBusOff = DISABLE`입니다. 버스오프가 나면 리셋 전까지 수신이 영구
-정지합니다. `.ioc`에 해당 항목이 없어 CubeMX 기본값으로 생성된 상태이므로, CubeMX GUI에서
-`Connectivity > CAN > Parameter Settings > Automatic Bus-Off Management`를 Enabled로
-바꾸고 재생성해야 합니다. → 티켓 `[FW-3]`
-
 ## 해결된 항목
+
+### AutoBusOff 활성화 (해결, `[FW-3]`)
+
+CubeMX GUI에서 `Connectivity > CAN > Parameter Settings > Automatic Bus-Off Management`
+를 Enabled로 변경 후 재생성. `can.c`가 `hcan.Init.AutoBusOff = ENABLE`로 갱신되었고,
+`.ioc`에는 `CAN.ABOM=ENABLE`이 기록됩니다. 이제 버스오프 발생 시 하드웨어가 자동으로
+복구를 시도하므로 리셋 없이 수신을 재개합니다.
+
+### 공격 알림 배선 (해결, `[FW-buzzer]`)
+
+`vids_on_result()`가 이전에는 정의되지 않아 `vids_pipeline.c`의 weak 심볼(no-op)이
+링크되고 있었습니다. `main.c` `USER CODE BEGIN 4`에 실제 구현을 추가하여, 판정 결과가
+`VIDS_ATTACK`이면 PA8(BUZZER)을 HIGH, 그 외에는 LOW로 설정합니다.
+
+- PA8을 CubeMX에서 `GPIO_Output`으로 지정하고 User Label `BUZZER`를 부여했습니다
+  (`main.h`에 `BUZZER_Pin`, `BUZZER_GPIO_Port` 매크로 자동 생성). 배선 상수를 손으로
+  적지 않으므로 나중에 핀을 옮겨도 코드 수정 불필요.
+- 알림은 K회 연속 필터(`VIDS_K_CONSECUTIVE=5`)를 통과한 결과에서만 발생합니다. 산발적
+  오탐으로 부저가 짧게 울리는 일은 없습니다.
+
 
 ### 콜백 심볼 충돌 · CAN 초기화 중복 · 파이프라인 미배선 (해결, `[FW-5]`)
 

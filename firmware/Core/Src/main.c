@@ -225,7 +225,12 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void vids_on_result(vids_result_t result, const vids_stats_t *stats)
+{
+  (void)stats;
+  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin,
+                    (result == VIDS_ATTACK) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
 /* USER CODE END 4 */
 
 /**
