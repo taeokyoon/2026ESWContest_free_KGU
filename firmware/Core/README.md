@@ -303,7 +303,7 @@ bash ../test/build_and_run.sh
 ```
 V-IDS              y=0   Font_7x10
 RX:1024 W:32       y=16  받은 프레임 / 처리한 윈도우
-ATK:3 DRP:0        y=28  경보 횟수 / 유실 프레임
+F:15 A:3 D:0       y=28  윈도우 양성 / 경보(K=5 통과) / 유실 프레임
 FEAT 0.09/0.14ms   y=40  특징 추출  min/max
 DET  2.61/4.22ms   y=52  추론       min/max
 ```
