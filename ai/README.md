@@ -284,13 +284,58 @@ CMSIS-NN의 int8 커널조차 내부적으로 int16으로 확장한다. int8의 
 | `vids_detect` 스택 | 2,064 B → **592 B** |
 | Flash / SRAM | 53.5% / 88.7% |
 
-⚠️ **추론 시간 실측은 아직 없다.** 보드가 필요하며 `[FW-4]`가 담당한다.
-MAC당 4~8사이클 가정 시 2.6~5.3ms로 추정되나, **추정치를 실측처럼 쓰지 말 것.**
+### 온디바이스 추론 시간 — 보드 실측 (2026-09-01, `[FW-4]` 완료)
+
+NUCLEO-F103RB(72 MHz, FPU 없음)에서 DWT 사이클 카운터로 측정했다.
+윈도우 78개 처리, 프레임 유실 0.
+
+| 구간 | min | max |
+|---|---|---|
+| `feature_extract_push` 32프레임 누적 `[FEAT]` | **2.91 ms** | **3.29 ms** |
+| `vids_detect` 1회 `[DET]` | **20.30 ms** | **25.04 ms** |
+| 윈도우당 합계 | **23.21 ms** | **28.33 ms** |
+
+**빌드는 CubeIDE Debug 구성(`-O0`)이다.** 최적화 레벨이 결과를 크게 좌우하므로 반드시 함께 밝힌다.
+
+🔴 **현재 빌드는 원본 재생 속도를 따라가지 못한다.** 평가셋 실측 프레임 속도가
+2,672~2,818 fps이므로 윈도우 하나에 허용되는 시간은 약 11.9 ms인데, 실측은 그 **2.0~2.4배**다.
+유실 없이 돌리려면 재생 속도를 약 1,100 fps 이하로 낮춰야 한다.
+원인과 개선 경로는 루트 `README.md`의 "향후 계획 — 성능 개선" 절에 정량화해 두었다.
+
+이전 문서의 추정치(MAC당 4~8사이클 가정, 2.6~5.3 ms)는 **실측의 1/4~1/8로 빗나갔다.**
+가정이 손최적화 어셈블리 수준이었고 실제 `-O0` 빌드는 MAC당 38~50 사이클이기 때문이다.
+
+### 학습 산출물에서 C 헤더까지 — 변환 도구 없이
+
+X-CUBE-AI / STM32Cube AI Studio 가 NUCLEO-F103RB(Cortex-M3)를 공식 지원하지 않아
+자동 변환 경로가 막혀 있다. 그 도구가 대신 해줬을 일(가중치 추출 · 대칭 int8 양자화 ·
+C 배열 생성)을 `00_export_weights.py` 가 수행한다.
+
+**TensorFlow 설치가 필요 없다** — `.keras` 는 zip 이고 그 안의 `model.weights.h5` 를
+h5py 로 직접 읽는다.
+
+```
+ai/models/autoencoder_v5.keras
+        │  00_export_weights.py
+        ▼
+autoencoder_v5_weights.h  /  autoencoder_v5_weights_int8.h
+        │  03_quantize.py  (정상 검증셋으로 임계값·활성값 스케일 산출)
+        ▼
+autoencoder_v5_quant.h  ->  inference.c  ->  보드
+```
+
+`.keras` 에서 다시 생성한 두 헤더는 레포에 커밋된 헤더와 **바이트 단위로 일치한다**
+(647,477 B / 186,073 B). 인자 없이 실행하면 대조만 하고 파일을 쓰지 않으며,
+`--write` 를 붙이면 다시 생성한다.
+
+⚠️ scale 은 `float32` 연산으로 구해야 한다. `float64` 로 나누면 소수점 10번째 자리가
+달라져 헤더가 바이트 단위로 어긋난다(값 차이 3e-8, 양자화 결과는 47,360개 전부 동일).
 
 ### 재현 방법
 
 ```bash
 export VIDS_DATA=<데이터셋 폴더>          # Pre_train_*.csv 등이 있는 곳
+python3 ai/notebooks/00_export_weights.py  # .keras -> C 가중치 헤더 (데이터셋 불필요)
 python3 ai/notebooks/01_parse_weights.py   # 가중치 파서 + 양자화 재현 검증
 python3 ai/notebooks/02_rebuild_pipeline.py # 파이프라인 재현, 검산 7개
 python3 ai/notebooks/03_quantize.py         # 캘리브레이션 -> autoencoder_v5_quant.h 생성
