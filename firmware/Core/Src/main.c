@@ -233,8 +233,12 @@ void SystemClock_Config(void)
 void vids_on_result(vids_result_t result, const vids_stats_t *stats)
 {
   (void)stats;
-  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin,
-                    (result == VIDS_ATTACK) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+  if (result == VIDS_ATTACK) {
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+  } else {
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
+  }
 }
 /* USER CODE END 4 */
 
